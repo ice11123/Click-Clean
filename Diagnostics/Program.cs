@@ -11,6 +11,8 @@ public static class Program
     public static void Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "--system-check") { SystemCheck(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--acceptance") { RunUpdateCheck(() => AcceptanceCheck.Run(args[1]), Path.ChangeExtension(args[1], ".failure.txt")); return; }
+        if (args.Length == 2 && args[0] == "--startup-probe") { File.WriteAllText(args[1], JsonSerializer.Serialize(new { Admin = WindowsMemoryApi.IsAdmin(), ProcessId = Environment.ProcessId })); return; }
         if (args.Length == 3 && args[0] == "--verify-updates") { RunUpdateCheck(() => UpdateVerification.Check(args[1], args[2]), Path.Combine(args[2], "failure.txt")); return; }
         if (args.Length == 4 && args[0] == "--apply-update-fixture") { RunUpdateCheck(() => UpdateVerification.ApplyFixture(args[1], args[2], args[3]), args[3]); return; }
         var output = args.Length == 2 && args[0] == "--capture" ? Path.GetFullPath(args[1]) : null;
@@ -74,7 +76,7 @@ public static class Program
         }, new JsonSerializerOptions { WriteIndented = true }));
         window.DisposeResources();
     }
-    private static void SystemCheck(string output)
+    internal static void SystemCheck(string output)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(output))!; Directory.CreateDirectory(directory);
         try

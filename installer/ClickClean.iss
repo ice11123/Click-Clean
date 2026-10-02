@@ -59,6 +59,12 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Uninstall\ClickCl
 Filename: "{app}\current\ClickClean.exe"; Description: "启动 Click-Clean 即清"; Flags: nowait postinstall skipifsilent
 [UninstallRun]
 Filename: "{app}\current\ClickClean.exe"; Parameters: "--remove-startup"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveStartupTask"
+[UninstallDelete]
+Type: files; Name: "{app}\packages\.betaId"
+Type: files; Name: "{app}\packages\ClickClean-*-full.nupkg"
+Type: files; Name: "{app}\packages\ClickClean-*-delta.nupkg"
+Type: files; Name: "{app}\packages\ClickClean-*.nupkg.partial"
+Type: dirifempty; Name: "{app}\packages"
 [Code]
 var DeleteUserData: Boolean;
 function InitializeSetup(): Boolean;

@@ -21,6 +21,8 @@ public partial class App : Application
     private Mutex? installerGuard;
     private EventWaitHandle? activation;
     private RegisteredWaitHandle? waiter;
+    private EventWaitHandle? exitSignal;
+    private RegisteredWaitHandle? exitWaiter;
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -30,7 +32,7 @@ public partial class App : Application
         { MessageBox.Show("Click-Clean 仅支持 Windows 11 x64。", "平台不支持"); Shutdown(2); return; }
         if (e.Args.SequenceEqual(new[] { "--remove-startup" }))
         { try { StartupTask.Set(false); Shutdown(); } catch { Shutdown(1); } return; }
-        if (e.Args.Any(a => a != "--tray"))
+        if (e.Args.Any(a => a != "--tray") && !e.Args.SequenceEqual(new[] { "--exit" }))
         { MessageBox.Show("不支持的启动参数。", "Click-Clean"); Shutdown(2); return; }
         if (!WindowsMemoryApi.IsAdmin())
         { MessageBox.Show("请双击 ClickClean.exe 并同意管理员授权。", "Click-Clean"); Shutdown(1); return; }
@@ -38,6 +40,12 @@ public partial class App : Application
         {
             using var identity = WindowsIdentity.GetCurrent();
             var suffix = identity.User!.Value;
+            if (e.Args.SequenceEqual(new[] { "--exit" }))
+            {
+                try { using var signal = EventWaitHandle.OpenExisting(@"Local\ClickClean.Exit." + suffix); signal.Set(); }
+                catch (WaitHandleCannotBeOpenedException) { }
+                Shutdown(); return;
+            }
             singleton = new Mutex(true, @"Local\ClickClean.Singleton." + suffix, out var first);
             activation = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\ClickClean.Activate." + suffix);
             if (!first) { activation.Set(); Shutdown(); return; }
@@ -51,10 +59,12 @@ public partial class App : Application
             };
             var window = new MainWindow(store, e.Args.Contains("--tray")); MainWindow = window;
             waiter = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => Dispatcher.BeginInvoke(window.ShowMain), null, Timeout.Infinite, false);
+            exitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\ClickClean.Exit." + suffix);
+            exitWaiter = ThreadPool.RegisterWaitForSingleObject(exitSignal, (_, _) => Dispatcher.BeginInvoke(window.TryExit), null, Timeout.Infinite, false);
             if (!e.Args.Contains("--tray")) window.Show();
         }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Click-Clean 启动失败"); Shutdown(1); }
     }
     protected override void OnExit(ExitEventArgs e)
-    { waiter?.Unregister(null); activation?.Dispose(); installerGuard?.Dispose(); singleton?.Dispose(); base.OnExit(e); }
+    { exitWaiter?.Unregister(null); exitSignal?.Dispose(); waiter?.Unregister(null); activation?.Dispose(); installerGuard?.Dispose(); singleton?.Dispose(); base.OnExit(e); }
 }
