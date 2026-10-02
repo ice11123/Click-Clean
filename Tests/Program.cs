@@ -171,6 +171,30 @@ await Check("旧岛设置升级、新版关闭选择持久化", () => {
     restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 2);
     return Task.CompletedTask;
 });
+await Check("底部岛三阶段、严格两秒与采样更新不重置期限", () => {
+    var clock = new FakeTime(); var status = new DockStatus(clock);
+    status.SetMemory(new(1000, 370, 500, 2000)); Assert(status.Text == "内存 63%");
+    status.SetOperation("2/3 刷新修改页"); clock.Advance(10); Assert(status.Text == "2/3 刷新修改页");
+    status.SetResult("完成 · +0.00 GiB"); Assert(status.ResultRemaining.TotalSeconds == 2);
+    clock.Advance(1); status.SetMemory(new(1000, 500, 500, 2000)); Assert(status.Text == "完成 · +0.00 GiB");
+    clock.Utc = clock.Utc.AddDays(-3); Assert(status.ResultRemaining.TotalSeconds == 1);
+    clock.Advance(1); Assert(status.Text == "内存 50%" && status.ResultRemaining == TimeSpan.Zero);
+    status.SetResult("部分完成 · −1.00 GiB"); Assert(status.Text.Contains("−1.00"));
+    status.SetOperation("准备整理…"); Assert(status.ResultRemaining == TimeSpan.Zero);
+    status.SetIdle(); Assert(status.Text == "内存 50%");
+    return Task.CompletedTask;
+});
+await Check("灯色分档边界与未知、异常快照防御", () => {
+    Assert(DockStatus.Band(0) == MemoryPressureBand.Low && DockStatus.Band(59.99) == MemoryPressureBand.Low);
+    Assert(DockStatus.Band(60) == MemoryPressureBand.Moderate && DockStatus.Band(84.99) == MemoryPressureBand.Moderate);
+    Assert(DockStatus.Band(85) == MemoryPressureBand.High && DockStatus.Band(100) == MemoryPressureBand.High);
+    foreach (var load in new double?[] { null, double.NaN, double.PositiveInfinity, -1, 101 }) Assert(DockStatus.Band(load) == MemoryPressureBand.Unknown);
+    var status = new DockStatus();
+    foreach (var snapshot in new MemorySnapshot?[] { null, new(0, 0, 0, 0), new(100, 101, 0, 0) }) {
+        status.SetMemory(snapshot); Assert(status.Text == "内存 —" && status.Pressure == MemoryPressureBand.Unknown);
+    }
+    return Task.CompletedTask;
+});
 Console.WriteLine($"全部通过：{passed}组测试（含7种组合及3种失败位置）。");
 
 sealed class FakeApi : IMemoryApi

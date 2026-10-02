@@ -41,13 +41,30 @@ public static class Program
         var before = new MemorySnapshot(32UL << 30, 12UL << 30, 21UL << 30, 48UL << 30);
         window.DesktopIsland?.PreviewReveal(false);
         await DockVerification.Check(output, checks);
+        if (window.DesktopIsland is { } liveDock) {
+            var label = (TextBlock)liveDock.FindName("StatusLabel");
+            liveDock.PreviewReveal(true);
+            Assert(window.SamplingSeconds == 1 && label.Text.StartsWith("内存 ", StringComparison.Ordinal), "浮出即刷新内存，实时采样间隔为一秒");
+            ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            for (var step = 1; step <= 3; step++) {
+                var deadline = Stopwatch.StartNew();
+                while (!label.Text.StartsWith(step + "/3 ", StringComparison.Ordinal) && deadline.Elapsed.TotalSeconds < 2) await Task.Delay(10);
+                Assert(label.Text.StartsWith(step + "/3 ", StringComparison.Ordinal), "主窗口模拟整理同步到底部岛步骤 " + step);
+            }
+            var finish = Stopwatch.StartNew();
+            while (window.IsBusy && finish.Elapsed.TotalSeconds < 3) await Task.Delay(10);
+            Assert(!window.IsBusy && label.Text.StartsWith("完成 · ", StringComparison.Ordinal), "主窗口整理完成展示成果，不被finally恢复覆盖");
+            await Task.Delay(2150);
+            Assert(label.Text.StartsWith("内存 ", StringComparison.Ordinal), "真实UI流程两秒后恢复实时内存，不需要额外点击");
+            liveDock.PreviewReveal(false);
+        }
         window.ShowResult(new(DateTimeOffset.Now, before, before with { Available = 13UL << 30 }, [new(MemoryCommand.StandbyCache, 0, 0.1)], false, null, 0.1) { Trigger = "预览（模拟）" });
         await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         foreach (var theme in new[] { "light", "dark" })
         {
             store.Settings.Theme = theme; window.ApplyTheme(); window.CloseOverlay();
-            window.SetIsland($"即清 · 内存 {before.Load:0}%", "", false, false); window.RenderTo(Path.Combine(output, theme + "-main.png"));
-            window.SetIsland("正在刷新修改页", "阈值整理 · 等待系统返回", true, false); window.RenderTo(Path.Combine(output, theme + "-running.png"));
+            window.PreviewDockIdle(before); window.RenderTo(Path.Combine(output, theme + "-main.png"));
+            window.SetDockOperation("刷新修改页…"); window.RenderTo(Path.Combine(output, theme + "-running.png"));
             if (window.DesktopIsland is { } mini) { mini.PreviewReveal(true); mini.UpdateLayout(); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); }
             foreach (var section in new[] { "appearance", "automation", "updates", "about" })
             {

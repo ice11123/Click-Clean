@@ -12,8 +12,11 @@ internal static class DockVerification
         void Assert(bool value, string text) { if (!value) throw new InvalidOperationException(text); checks.Add(text); }
         var clicks = 0;
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var island = new MiniIsland(async () => { clicks++; await completion.Task; }) { MotionAllowed = false };
+        var status = new DockStatus();
+        var island = new MiniIsland(async () => { clicks++; await completion.Task; }, status) { MotionAllowed = false };
         var button = (Button)island.FindName("CleanButton");
+        var label = (TextBlock)island.FindName("StatusLabel");
+        var dot = (System.Windows.Shapes.Ellipse)island.FindName("Dot");
         try {
             island.Show(); await island.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             var area = SystemParameters.WorkArea;
@@ -28,18 +31,29 @@ internal static class DockVerification
             island.PreviewPointer(new Point(island.Width / 2, island.Height - 5), false, 1);
             Assert(island.IsRevealed && clicks == 0, "靠近底部浮出但不执行整理");
             Assert(button.ContextMenu is null && CountButtons(island) == 1, "底部岛仅一个点击入口，无附加按钮或菜单");
-            island.SetState("即清 · 内存 63%", "", false, false);
+            status.SetMemory(new(1000, 370, 500, 2000)); island.RefreshStatus();
+            Assert(label.Text == "内存 63%" && !island.BreathingActive, "实时占用显示正确，减少动画时呼吸灯静态呈现");
             await island.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             MainWindow.Capture(island, Path.Combine(output, "dock-ready.png"));
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert(clicks == 1 && !button.IsEnabled, "点击即触发一次整理，忙碌时拒绝重复点击");
-            island.SetState("正在整理", "", true, false);
+            foreach (var command in Enum.GetValues<MemoryCommand>()) {
+                status.SetOperation(Labels.Name(command)); island.RefreshStatus();
+                Assert(label.Text == Labels.Name(command), "底部岛显示当前真实步骤：" + Labels.Name(command));
+            }
             await island.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             MainWindow.Capture(island, Path.Combine(output, "dock-running.png"));
             completion.SetResult();
             for (var i = 0; i < 20 && !button.IsEnabled; i++) await Task.Delay(10);
             Assert(button.IsEnabled, "整理完成后恢复点击入口");
+            status.SetResult("完成 · +1.00 GiB"); island.RefreshStatus();
+            Assert(label.Text == "完成 · +1.00 GiB" && island.ResultTimerActive, "完成结果独立计时，不依赖内存采样");
+            await Task.Delay(1600); status.SetMemory(new(1000, 450, 500, 2000)); island.RefreshStatus();
+            Assert(label.Text == "完成 · +1.00 GiB", "结果显示期间实时采样不覆盖成果或重置两秒期限");
+            await Task.Delay(550);
+            Assert(label.Text == "内存 55%" && !island.ResultTimerActive, "两秒后自动恢复最新内存数，结果计时停止");
+            MainWindow.Capture(island, Path.Combine(output, "dock-after-result.png"));
             island.PreviewPointer(new Point(island.Width / 2, 30), false, 1.1);
             Assert(island.IsRevealed, "指针移入浮出胶囊时持续显示");
             island.PreviewPointer(new Point(-100, -100), false, 1.2);
@@ -53,6 +67,19 @@ internal static class DockVerification
             island.ResetPosition();
             Assert(Math.Abs(island.Top + island.Height - SystemParameters.WorkArea.Bottom) < 1, "显示布局刷新后重新停靠工作区底部");
             if (SystemParameters.ClientAreaAnimation) {
+                island.MotionAllowed = true; island.PreviewReveal(true);
+                Assert(island.BreathingActive && dot.HasAnimatedProperties, "浮出时呼吸灯启动原生透明度动画");
+                var firstOpacity = dot.Opacity; await Task.Delay(300);
+                Assert(Math.Abs(dot.Opacity - firstOpacity) > 0.03, "呼吸灯随时间柔和变化");
+                foreach (var sample in new[] { (900UL, "#FF70CFA4"), (370UL, "#FFEEBE68"), (100UL, "#FFF27D7C") }) {
+                    status.SetMemory(new(1000, sample.Item1, 500, 2000)); island.RefreshStatus();
+                    Assert(((SolidColorBrush)dot.Fill).Color.ToString() == sample.Item2 && island.BreathingActive, "呼吸灯按占用分档且数字刷新不停止动画：" + sample.Item1);
+                }
+                status.SetMemory(null); island.RefreshStatus();
+                Assert(label.Text == "内存 —" && !island.BreathingActive && !dot.HasAnimatedProperties, "未知采样显示破折号、灰灯并停止呼吸");
+                status.SetMemory(new(1000, 370, 500, 2000)); island.RefreshStatus();
+                island.MotionAllowed = false;
+                Assert(!island.BreathingActive && dot.Opacity == 1 && !dot.HasAnimatedProperties, "动态开启减少动画立即解除呼吸时钟");
                 island.PreviewReveal(false); island.MotionAllowed = true;
                 island.PreviewPointer(new Point(island.Width / 2, island.Height - 5), false, 10);
                 await Task.Delay(40);
@@ -63,6 +90,9 @@ internal static class DockVerification
                 Assert(Math.Abs(slide.Y - offset) < 1, "上浮中途移开，从当前位置反向收回不跳变");
                 await Task.Delay(220);
                 Assert(button.Opacity == 0 && slide.Y == 48, "收回动画在短时长内结束");
+                Assert(!island.BreathingActive && !dot.HasAnimatedProperties && !island.ResultTimerActive, "收起停止呼吸和结果计时，不持续渲染");
+                island.PreviewReveal(true); island.Hide();
+                Assert(!island.BreathingActive && !dot.HasAnimatedProperties, "禁用入口后移除呼吸动画");
             } else {
                 island.MotionAllowed = false; island.PreviewReveal(false);
                 island.PreviewPointer(new Point(island.Width / 2, island.Height - 5), false, 10);

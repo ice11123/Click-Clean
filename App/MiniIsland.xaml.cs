@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using System.Windows.Media.Animation;
+using System.Windows.Automation;
 
 namespace ClickClean;
 
@@ -12,16 +14,23 @@ public partial class MiniIsland : Window
     private readonly DockRevealPolicy reveal = new();
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly DispatcherTimer pointerTimer;
+    private readonly DispatcherTimer resultTimer;
+    private readonly DockStatus status;
+    private bool motionAllowed = true, breathing;
     private bool shown, invoking, disposed, verificationOverride;
     private IntPtr handle;
-    public bool MotionAllowed { get; set; } = true;
+    public bool MotionAllowed { get => motionAllowed; set { motionAllowed = value; RefreshBreathing(); } }
+    public bool BreathingActive => breathing;
+    public bool ResultTimerActive => resultTimer.IsEnabled;
     public bool IsRevealed => shown;
     public bool PointerPollingActive => pointerTimer.IsEnabled;
     public event Action? RevealChanged;
 
-    public MiniIsland(Func<Task> clean)
+    public MiniIsland(Func<Task> clean, DockStatus? status = null)
     {
-        this.clean = clean; InitializeComponent();
+        this.clean = clean; this.status = status ?? new DockStatus(); InitializeComponent();
+        resultTimer = new DispatcherTimer(DispatcherPriority.Normal);
+        resultTimer.Tick += (_, _) => RefreshStatus();
         pointerTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(150) };
         pointerTimer.Tick += (_, _) => PollPointer();
         ResetPosition();
@@ -45,7 +54,7 @@ public partial class MiniIsland : Window
         // 不抢当前应用焦点；透明窗口收起时不截获鼠标。
         if (message == 0x0021) { handled = true; return new IntPtr(3); }
         if (message == 0x0084 && !shown) { handled = true; return new IntPtr(-1); }
-        if (message is 0x007E or 0x001A or 0x02E0) Dispatcher.BeginInvoke(ResetPosition);
+        if (message is 0x007E or 0x001A or 0x02E0) Dispatcher.BeginInvoke(() => { ResetPosition(); RefreshBreathing(); });
         return IntPtr.Zero;
     }
     public void ResetPosition()
@@ -81,14 +90,37 @@ public partial class MiniIsland : Window
         IslandMotion.To(Slide, TranslateTransform.YProperty, value ? 0 : 48, 150, motion);
         IslandMotion.Opacity(CleanButton, value ? 1 : 0, 150, animate);
         if (!value) SetPressed(false, false);
+        RefreshStatus();
         if (changed) RevealChanged?.Invoke();
     }
-    public void SetState(string title, string detail, bool running, bool animate)
+    public void RefreshStatus()
     {
-        StatusLabel.Text = running ? "整理中…" : title.StartsWith("即清 · 内存 ", StringComparison.Ordinal) ? title[5..] :
-            title.Contains("失败", StringComparison.Ordinal) ? "整理失败" : title.Contains("完成", StringComparison.Ordinal) ?
-            detail.Replace("可用内存 ", "已整理 · ", StringComparison.Ordinal) : "点击整理";
-        Dot.Fill = new SolidColorBrush(running ? Color.FromRgb(238, 177, 84) : Color.FromRgb(131, 173, 249));
+        if (disposed) return;
+        StatusLabel.Text = status.Text;
+        AutomationProperties.SetName(CleanButton, status.Text + "；点击执行一次全系统内存整理");
+        var color = status.Pressure switch {
+            MemoryPressureBand.Low => Color.FromRgb(112, 207, 164),
+            MemoryPressureBand.Moderate => Color.FromRgb(238, 190, 104),
+            MemoryPressureBand.High => Color.FromRgb(242, 125, 124),
+            _ => Color.FromRgb(151, 160, 175)
+        };
+        if (Dot.Fill is not SolidColorBrush brush || brush.Color != color) Dot.Fill = new SolidColorBrush(color);
+        resultTimer.Stop();
+        var remaining = status.ResultRemaining;
+        if (IsVisible && shown && remaining > TimeSpan.Zero) {
+            resultTimer.Interval = remaining < TimeSpan.FromMilliseconds(1) ? TimeSpan.FromMilliseconds(1) : remaining; resultTimer.Start();
+        }
+        RefreshBreathing();
+    }
+    private void RefreshBreathing()
+    {
+        var enabled = !disposed && IsVisible && shown && MotionAllowed && SystemParameters.ClientAreaAnimation && status.Pressure != MemoryPressureBand.Unknown;
+        if (enabled == breathing) return;
+        breathing = enabled;
+        Dot.BeginAnimation(OpacityProperty, null); Dot.Opacity = 1;
+        if (enabled) Dot.BeginAnimation(OpacityProperty, new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(1200)) {
+            AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever
+        });
     }
     private async void Clean_Click(object sender, RoutedEventArgs e)
     {
@@ -121,7 +153,7 @@ public partial class MiniIsland : Window
     public void DisposeDock()
     {
         if (disposed) return;
-        disposed = true; pointerTimer.Stop();
+        disposed = true; pointerTimer.Stop(); resultTimer.Stop(); RefreshBreathing();
         if (handle != IntPtr.Zero) HwndSource.FromHwnd(handle)?.RemoveHook(WindowMessages);
     }
 

@@ -15,7 +15,7 @@
       </ControlTemplate></Button.Template>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
         <Ellipse x:Name="Dot" Width="5" Height="5" Fill="#83ADF9" Margin="0,0,9,0" VerticalAlignment="Center"/>
-        <TextBlock x:Name="StatusLabel" Text="点击整理" Foreground="{DynamicResource IslandText}" FontSize="12" FontWeight="Medium" MaxWidth="146" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular"/>
+        <TextBlock x:Name="StatusLabel" Text="内存 —" Foreground="{DynamicResource IslandText}" FontSize="12" FontWeight="Medium" Width="126" TextAlignment="Center" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular"/>
       </StackPanel>
     </Button>
   </Grid>

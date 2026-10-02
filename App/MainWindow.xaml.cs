@@ -22,11 +22,10 @@ public partial class MainWindow : Window
     private System.Windows.Forms.NotifyIcon? tray;
     private MiniIsland? mini;
     private bool exiting, loadingSettings, exitRequested, lastInputWasPointer, tickRunning, applying, activeAutomatic;
-    private string currentStep = "", islandTitle = "即清 · 随时就绪", islandDetail = "";
-    private bool islandExpanded;
+    private string currentStep = "";
+    private readonly DockStatus dockStatus = new();
     private double nextUpdateCheck = 15;
     private double lastThemeCheck = -30;
-    private double resultUntil;
     public bool IsBusy => cancellation is not null || engine.IsRunning;
     public bool TrayVisible => tray?.Visible == true;
     public double SamplingSeconds => timer.Interval.TotalSeconds;
@@ -74,15 +73,15 @@ public partial class MainWindow : Window
             tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMain);
             TryRefreshStartup();
         }
-        if (store.History.FirstOrDefault() is { } recentResult) ShowResult(recentResult);
+        if (store.History.FirstOrDefault() is { } recentResult) ShowResult(recentResult, false);
         RefreshMemory(); RefreshAutomationSummary();
         if (store.Settings.MiniIsland) ShowIsland();
         timer.Start();
     }
 
-    private async Task Tick()
+    private Task Tick()
     {
-        if (tickRunning || exiting || applying) return;
+        if (tickRunning || exiting || applying) return Task.CompletedTask;
         tickRunning = true;
         try
         {
@@ -91,13 +90,13 @@ public partial class MainWindow : Window
             if (IsBusy && operationClock.Elapsed.TotalSeconds >= 60)
             {
                 StatusText.Text = $"{currentStep}耗时较长，仍在等待系统返回；可取消后续步骤。";
-                SetIsland("仍在等待系统返回", currentStep + " · 取消只影响后续步骤", true, false);
+                SetDockOperation("等待 · " + currentStep);
             }
             if (!preview)
             {
                 var trigger = automation.Evaluate(snapshot?.Load, IsBusy || applying || updates.Busy);
                 if (trigger is not null)
-                    await Cleanup(store.Settings.Automation.FullCleanup ? Enum.GetValues<MemoryCommand>() : [MemoryCommand.StandbyCache], trigger, true);
+                    _ = Cleanup(store.Settings.Automation.FullCleanup ? Enum.GetValues<MemoryCommand>() : [MemoryCommand.StandbyCache], trigger, true);
                 if (store.Settings.CheckUpdates && uptime.Elapsed.TotalSeconds >= nextUpdateCheck)
                 {
                     nextUpdateCheck = uptime.Elapsed.TotalSeconds + 6 * 3600;
@@ -107,10 +106,9 @@ public partial class MainWindow : Window
                     ApplyUpdate();
             }
             RefreshAutomationSummary();
-            if (!IsBusy && !updates.Ready && uptime.Elapsed.TotalSeconds >= resultUntil)
-                SetIsland(snapshot is null ? "状态暂不可读" : $"即清 · 内存 {snapshot.Load:0}%", "", false, false);
         }
         finally { tickRunning = false; }
+        return Task.CompletedTask;
     }
     public void ShowMain() { Show(); WindowState = WindowState.Normal; Activate(); }
     private MemorySnapshot? RefreshMemory()
@@ -118,13 +116,14 @@ public partial class MainWindow : Window
         try
         {
             var snapshot = memory.Read();
+            dockStatus.SetMemory(snapshot); mini?.RefreshStatus();
             LoadText.Text = snapshot.Load.ToString("0"); MemoryBar.Value = snapshot.Load;
             UsedText.Text = Labels.Bytes(snapshot.Used); AvailableText.Text = Labels.Bytes(snapshot.Available);
             TotalText.Text = Labels.Bytes(snapshot.Total); CommitText.Text = $"{Labels.Bytes(snapshot.Commit)} / {Labels.Bytes(snapshot.CommitLimit)}";
             if (tray is not null) tray.Text = $"Click-Clean · {snapshot.Load:0}% · 可用 {Labels.Bytes(snapshot.Available)}";
             return snapshot;
         }
-        catch (Exception ex) { StatusText.Text = "内存读取失败：" + ex.Message; store.Log(ex.ToString()); return null; }
+        catch (Exception ex) { dockStatus.SetMemory(null); mini?.RefreshStatus(); StatusText.Text = "内存读取失败：" + ex.Message; store.Log(ex.ToString()); return null; }
     }
     public void ApplyTheme(string? overrideTheme = null)
     {
@@ -171,20 +170,21 @@ public partial class MainWindow : Window
     private async Task Cleanup(IEnumerable<MemoryCommand> commands, string trigger = "手动", bool automatic = false)
     {
         if (IsBusy || applying) { StatusText.Text = "当前操作尚未结束，请稍等。"; return; }
+        var selected = commands.Distinct().OrderBy(c => (int)c).ToArray();
         cancellation = new();
         activeAutomatic = automatic;
         CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = false;
         if (mini is not null) mini.CleanButton.IsEnabled = false;
         CancelButton.Visibility = Visibility.Visible; CancelButton.IsEnabled = true;
         CleanButton.Content = "正在整理…"; StatusText.Text = preview ? "正在演示整理过程，不调用系统整理接口。" : "正在准备权限…";
-        SetIsland(preview ? "演示整理" : "正在整理", trigger + " · 全系统", true, lastInputWasPointer);
+        SetDockOperation("准备整理…");
         operationClock.Restart(); UpdateChanged();
         var success = false;
         try
         {
-            var result = await engine.RunAsync(commands, command => Dispatcher.Invoke(() => {
+            var result = await engine.RunAsync(selected, command => Dispatcher.Invoke(() => {
                 currentStep = Labels.Name(command); StatusText.Text = "正在" + currentStep + "…";
-                SetIsland(currentStep, (preview ? "模拟 · " : "") + trigger + "整理", true, false);
+                SetDockOperation($"{Array.IndexOf(selected, command) + 1}/{selected.Length} {currentStep}");
             }), cancellation.Token);
             result = result with { Trigger = preview ? "预览（模拟）" : trigger };
             success = result.Success; ShowResult(result);
@@ -194,7 +194,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = "整理失败：" + ex.Message; store.Log(ex.ToString());
-            SetIsland("整理失败", ex.Message, true, false); resultUntil = uptime.Elapsed.TotalSeconds + 10;
+            dockStatus.SetResult("整理失败"); mini?.RefreshStatus();
         }
         finally
         {
@@ -204,7 +204,6 @@ public partial class MainWindow : Window
             activeAutomatic = false;
             CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = true;
             if (mini is not null) mini.CleanButton.IsEnabled = true;
-            mini?.SetState(islandTitle, islandDetail, false, false);
             CancelButton.Visibility = Visibility.Collapsed; CleanButton.Content = "即刻整理";
             RefreshMemory(); RefreshAutomationSummary(); UpdateChanged();
             if (exitRequested) TryExit();
@@ -214,9 +213,9 @@ public partial class MainWindow : Window
     {
         cancellation?.Cancel(); CancelButton.IsEnabled = false;
         StatusText.Text = "已请求取消；等待当前系统调用返回后停止。";
-        SetIsland("正在等待当前步骤", "已取消后续步骤", true, false);
+        SetDockOperation("取消后续 · 等待返回");
     }
-    public void ShowResult(CleanupResult result)
+    public void ShowResult(CleanupResult result, bool showDock = true)
     {
         ResultCard.Visibility = Visibility.Visible;
         ResultTitle.Text = result.Success ? "整理完成" : result.Steps.Any(s => s.Success) ? "部分完成" : result.Cancelled ? "已取消" : "整理失败";
@@ -224,14 +223,17 @@ public partial class MainWindow : Window
         ResultMeta.Text = $"{result.Trigger} · {result.Seconds:0.0}s";
         ResultError.Text = result.Error ?? (result.Cancelled ? "已停止尚未开始的步骤。" : "系统观测变化，包含其他程序活动的影响。");
         ResultDetails.Text = $"{result.Time:yyyy-MM-dd HH:mm:ss}\n" + string.Join("\n", result.Steps.Select(s => $"{(s.Success ? "✓" : "!")} {Labels.Name(s.Command)} · {s.Seconds:0.00}s · {s.StatusHex}"));
-        resultUntil = uptime.Elapsed.TotalSeconds + 10;
-        SetIsland(ResultTitle.Text, "可用内存 " + Labels.Delta(result.AvailableChange), true, lastInputWasPointer);
+        if (showDock) {
+            var title = result.Success ? "完成" : result.Cancelled ? "已取消" : result.Steps.Any(s => s.Success) ? "部分完成" : "失败";
+            dockStatus.SetResult(title + " · " + (result.AvailableChange is null ? "变化未知" : Labels.Delta(result.AvailableChange)));
+            mini?.RefreshStatus();
+        }
     }
-    public void SetIsland(string title, string detail, bool expanded, bool animate)
+    public void SetDockOperation(string text)
     {
-        islandTitle = title; islandDetail = detail; islandExpanded = expanded;
-        mini?.SetState(title, detail, IsBusy, animate && MotionEnabled);
+        dockStatus.SetOperation(text); mini?.RefreshStatus();
     }
+    public void PreviewDockIdle(MemorySnapshot snapshot) { dockStatus.SetIdle(); dockStatus.SetMemory(snapshot); mini?.RefreshStatus(); }
     private void OpenOverlay(string title, bool settings, bool animate)
     {
         OverlayTitle.Text = title; SettingsPanel.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
@@ -332,7 +334,6 @@ public partial class MainWindow : Window
         store.Settings.AutoApplyHidden = ApplyHiddenCheck.IsChecked == true;
         if (store.Settings.MiniIsland) ShowIsland(); else mini?.Hide();
         if (mini is not null) mini.MotionAllowed = MotionEnabled;
-        if (!MotionEnabled) SetIsland(islandTitle, islandDetail, islandExpanded, false);
         SaveSettings(); SetSampling();
     }
     private void SaveAutomation_Click(object sender, RoutedEventArgs e)
@@ -371,20 +372,19 @@ public partial class MainWindow : Window
     public void ShowIsland()
     {
         if (mini is null) {
-            mini = new MiniIsland(async () => { lastInputWasPointer = true; await Cleanup(Enum.GetValues<MemoryCommand>(), "底部岛"); });
-            mini.RevealChanged += SetSampling;
+            mini = new MiniIsland(async () => { lastInputWasPointer = true; await Cleanup(Enum.GetValues<MemoryCommand>(), "底部岛"); }, dockStatus);
+            mini.RevealChanged += () => { SetSampling(); if (mini.IsRevealed) RefreshMemory(); };
         }
         mini.MotionAllowed = MotionEnabled;
-        mini.SetState(islandTitle, islandDetail, IsBusy, false); mini.CleanButton.IsEnabled = !IsBusy;
+        mini.RefreshStatus(); mini.CleanButton.IsEnabled = !IsBusy;
         mini.Show(); SetSampling();
     }
-    private void SetSampling() => timer.Interval = TimeSpan.FromSeconds(IsVisible && WindowState != WindowState.Minimized ? 1 : mini?.IsVisible == true && mini.IsRevealed ? 3 : 10);
+    private void SetSampling() => timer.Interval = TimeSpan.FromSeconds(IsVisible && WindowState != WindowState.Minimized || mini?.IsVisible == true && mini.IsRevealed ? 1 : 10);
     private async Task CheckUpdates(bool download)
     {
         if (applying) return;
         if (preview) { UpdateFeedback.Text = "交互预览不会访问发布服务或替换程序。"; return; }
         await updates.CheckAsync(download);
-        if (updates.Ready) SetIsland("更新已就绪", "短暂重启生效 · 无需安装向导", true, MotionEnabled);
     }
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckUpdates(store.Settings.AutoDownloadUpdates);
     private async void DownloadUpdate_Click(object sender, RoutedEventArgs e) => await CheckUpdates(true);
