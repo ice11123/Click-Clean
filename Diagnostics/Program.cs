@@ -20,11 +20,12 @@ public static class Program
         var root = output is null ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClickCleanPreview") : Path.Combine(output, "preview-data");
         Directory.CreateDirectory(root);
         var store = new Store(root); var app = new App(preview: true); app.InitializeComponent();
-        var window = new MainWindow(store, verification: true); app.MainWindow = window;
+        var openedLinks = new List<Uri>();
+        var window = new MainWindow(store, verification: true, projectLinkOpener: output is null ? null : openedLinks.Add); app.MainWindow = window;
         window.Loaded += async (_, _) => {
             window.ShowIsland();
             if (output is null) return;
-            try { await Capture(window, store, output); app.Shutdown(); }
+            try { await Capture(window, store, output, openedLinks); app.Shutdown(); }
             catch (Exception ex) { File.WriteAllText(Path.Combine(output, "failure.txt"), ex.ToString()); app.Shutdown(1); }
         };
         app.Run(window);
@@ -34,10 +35,18 @@ public static class Program
         try { action().GetAwaiter().GetResult(); }
         catch (Exception ex) { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(failurePath))!); File.WriteAllText(failurePath, ex.ToString()); Environment.ExitCode = 1; }
     }
-    private static async Task Capture(MainWindow window, Store store, string output)
+    private static async Task Capture(MainWindow window, Store store, string output, List<Uri> openedLinks)
     {
         Directory.CreateDirectory(output); var checks = new List<string>();
         void Assert(bool value, string text) { if (!value) throw new InvalidOperationException(text); checks.Add(text); }
+        var defaultWidth = window.Width; var defaultHeight = window.Height;
+        var buttons = new[] { "RepositoryLinkButton", "BlogLinkButton", "AuthorLinkButton" }.Select(name => (Button)window.FindName(name)).ToArray();
+        foreach (var button in buttons) button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert(openedLinks.Select(uri => uri.AbsoluteUri).SequenceEqual(new[] { "https://github.com/ice11123/Click-Clean", "https://ice11123.github.io/blog_test2/", "https://github.com/ice11123" }), "三个链接按钮分别打开准确的仓库、博客和作者首页（模拟打开器）");
+        Assert(buttons.All(button => !string.IsNullOrWhiteSpace(System.Windows.Automation.AutomationProperties.GetName(button)) && button.ToolTip is not null), "三个链接按钮均提供文字替代、辅助名称和提示");
+        var iconData = buttons.Select(button => Descendants(button).OfType<System.Windows.Shapes.Path>().FirstOrDefault()?.Data?.ToString()).ToArray();
+        Assert(iconData.All(data => !string.IsNullOrWhiteSpace(data)) && iconData.Distinct().Count() == 3, "仓库、博客和作者按钮使用三种不同矢量图标");
+        Assert(Descendants(window).OfType<TextBlock>().Any(text => text.Text.Contains("原作者：离子怪", StringComparison.Ordinal)), "原作者离子怪署名可见");
         var before = new MemorySnapshot(32UL << 30, 12UL << 30, 21UL << 30, 48UL << 30);
         window.DesktopIsland?.PreviewReveal(false);
         await DockVerification.Check(output, checks);
@@ -63,17 +72,39 @@ public static class Program
         foreach (var theme in new[] { "light", "dark" })
         {
             store.Settings.Theme = theme; window.ApplyTheme(); window.CloseOverlay();
+            ((ScrollViewer)window.FindName("MainContent")).ScrollToTop();
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            Assert(window.NativeThemeApplied, "原生标题栏成功应用主题属性：" + theme);
+            Assert(((SolidColorBrush)Application.Current.Resources["AccentText"]).Color.ToString() == (theme == "light" ? "#FFFFFFFF" : "#FF101A2F"), "主题强调文字使用对应前景色：" + theme);
+            foreach (var pair in new[] { ("Text", "Surface"), ("Muted", "Surface"), ("AccentText", "Accent") }) {
+                var foreground = ((SolidColorBrush)Application.Current.Resources[pair.Item1]).Color;
+                var background = ((SolidColorBrush)Application.Current.Resources[pair.Item2]).Color;
+                Assert(Contrast(foreground, background) >= 4.5, "主题基础文本色对比度不少于4.5：" + theme + "/" + pair.Item1);
+            }
             window.PreviewDockIdle(before); window.RenderTo(Path.Combine(output, theme + "-main.png"));
+            var scroller = (ScrollViewer)window.FindName("MainContent");
+            scroller.ScrollToBottom(); await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            Assert(scroller.VerticalOffset > 0 && Descendants(scroller).OfType<System.Windows.Controls.Primitives.ScrollBar>().Any(bar => bar.Orientation == Orientation.Vertical && bar.Width == 10), "主题滚动条存在，主体能够滚动到底部：" + theme);
+            scroller.ScrollToTop(); await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             window.SetDockOperation("刷新修改页…"); window.RenderTo(Path.Combine(output, theme + "-running.png"));
             if (window.DesktopIsland is { } mini) { mini.PreviewReveal(true); mini.UpdateLayout(); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); }
             foreach (var section in new[] { "appearance", "automation", "updates", "about" })
             {
                 window.OpenSettings(); window.ShowSettingsSection(section);
+                await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                var panelName = section switch { "appearance" => "AppearanceSection", "automation" => "AutomationSection", "updates" => "UpdatesSection", _ => "AboutSection" };
+                Assert(Descendants((FrameworkElement)window.FindName(panelName)).OfType<TextBlock>().Where(text => text.FontSize >= 17).All(text => ((SolidColorBrush)text.Foreground).Color == ((SolidColorBrush)Application.Current.Resources["Text"]).Color), "设置区大标题实际前景色跟随主题：" + theme + "/" + section);
+                var selectedTab = Descendants((DependencyObject)window.FindName("SettingsPanel")).OfType<Button>().First(button => button.Tag as string == section);
+                Assert(((SolidColorBrush)selectedTab.Background).Color == ((SolidColorBrush)Application.Current.Resources["Tint"]).Color, "设置分段导航选中状态正确：" + theme + "/" + section);
                 foreach (var scale in new[] { 1d, 1.25, 1.5, 1.75, 2d }) window.RenderTo(Path.Combine(output, $"{theme}-{section}-{scale * 100:0}.png"), scale);
             }
             window.OpenHistory(); window.RenderTo(Path.Combine(output, theme + "-history.png"));
             window.Width = 440; window.Height = 560; window.OpenSettings(); window.ShowSettingsSection("automation");
-            window.RenderTo(Path.Combine(output, theme + "-small-automation.png")); window.Width = 560; window.Height = 740;
+            window.RenderTo(Path.Combine(output, theme + "-small-automation.png")); window.CloseOverlay();
+            ((ScrollViewer)window.FindName("MainContent")).ScrollToTop();
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            Assert(buttons.All(button => button.IsVisible && button.ActualWidth > 55 && button.ActualHeight >= 30), "窄窗口下三个作者链接保持可见、可点击：" + theme);
+            window.RenderTo(Path.Combine(output, theme + "-small-main.png")); window.Width = defaultWidth; window.Height = defaultHeight;
         }
         window.OpenSettings(); var startup = (CheckBox)window.FindName("StartupCheck"); startup.Focus(); Assert(startup.IsKeyboardFocused, "设置可键盘聚焦");
         for (var i = 0; i < 50; i++)
@@ -102,6 +133,19 @@ public static class Program
             Note = "CPU测量期间实际启用底部岛鼠标监听。截图倍率属于离屏渲染检查，不代替真实 Windows 显示缩放验收。"
         }, new JsonSerializerOptions { WriteIndented = true }));
         window.DisposeResources();
+    }
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        yield return root;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            foreach (var child in Descendants(VisualTreeHelper.GetChild(root, i))) yield return child;
+    }
+    private static double Contrast(Color foreground, Color background)
+    {
+        static double Linear(byte value) { var channel = value / 255d; return channel <= 0.04045 ? channel / 12.92 : Math.Pow((channel + 0.055) / 1.055, 2.4); }
+        static double Light(Color value) => 0.2126 * Linear(value.R) + 0.7152 * Linear(value.G) + 0.0722 * Linear(value.B);
+        var first = Light(foreground); var second = Light(background);
+        return (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);
     }
     internal static void SystemCheck(string output)
     {

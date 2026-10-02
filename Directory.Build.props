@@ -3,7 +3,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <Version>2.1.1</Version>
+    <Version>2.2.0</Version>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/ice11123/Click-Clean</RepositoryUrl>

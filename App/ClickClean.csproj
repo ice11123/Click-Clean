@@ -8,7 +8,7 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier><SelfContained>true</SelfContained>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>false</PublishReadyToRun><EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
-    <Copyright>Copyright © 2026 ice11123 and Click-Clean contributors</Copyright><Company>Click-Clean</Company>
+    <Copyright>Copyright © 2026 离子怪 (ice11123) and Click-Clean contributors</Copyright><Company>Click-Clean</Company>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\Core\ClickClean.Core.csproj" /></ItemGroup>
   <ItemGroup><Resource Include="Assets\ClickClean.png" /></ItemGroup>

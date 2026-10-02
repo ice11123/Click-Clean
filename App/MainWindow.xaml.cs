@@ -17,11 +17,14 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer timer;
     private readonly AutomationPolicy automation = new();
     private readonly UpdateService updates;
+    private readonly Action<Uri> projectLinkOpener;
     private readonly Stopwatch uptime = Stopwatch.StartNew(), operationClock = new();
     private CancellationTokenSource? cancellation;
     private System.Windows.Forms.NotifyIcon? tray;
     private MiniIsland? mini;
     private bool exiting, loadingSettings, exitRequested, lastInputWasPointer, tickRunning, applying, activeAutomatic;
+    private IInputElement? overlayReturnFocus;
+    private double overlayReturnOffset;
     private string currentStep = "";
     private readonly DockStatus dockStatus = new();
     private double nextUpdateCheck = 15;
@@ -31,14 +34,17 @@ public partial class MainWindow : Window
     public double SamplingSeconds => timer.Interval.TotalSeconds;
     public bool MotionEnabled => !store.Settings.ReduceMotion && SystemParameters.ClientAreaAnimation;
     public MiniIsland? DesktopIsland => mini;
+    public bool NativeThemeApplied { get; private set; }
 
-    public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null)
+    public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null, Action<Uri>? projectLinkOpener = null)
     {
         this.store = store; preview = verification;
+        this.projectLinkOpener = projectLinkOpener ?? (uri => OpenExternal(uri.AbsoluteUri));
         updates = new UpdateService(Path.Combine(store.Root, "update-state.json"));
         memory = memoryApi ?? (verification ? new PreviewMemoryApi() : new WindowsMemoryApi());
         engine = new MemoryEngine(memory);
         InitializeComponent(); ApplyTheme();
+        SourceInitialized += (_, _) => ApplyTheme();
         VersionText.Text = $"Windows 11 · x64 · {BuildInfo.Version}";
         AboutVersion.Text = $"版本 {BuildInfo.Version} · {BuildInfo.Commit}";
         AdminText.Text = preview ? "交互预览 · 模拟数据" : "管理员已就绪";
@@ -137,15 +143,17 @@ public partial class MainWindow : Window
         {
             SetBrush("Bg", SystemColors.WindowColor); SetBrush("Surface", SystemColors.WindowColor);
             SetBrush("Text", SystemColors.WindowTextColor); SetBrush("Muted", SystemColors.WindowTextColor);
-            SetBrush("Line", SystemColors.WindowTextColor); SetBrush("Accent", SystemColors.HighlightColor);
+            SetBrush("Line", SystemColors.WindowTextColor); SetBrush("Accent", SystemColors.HighlightColor); SetBrush("AccentText", SystemColors.HighlightTextColor);
             SetBrush("Tint", SystemColors.ControlColor);
-            SetBrush("IslandBg", SystemColors.WindowColor); SetBrush("IslandText", SystemColors.WindowTextColor); SetBrush("IslandMuted", SystemColors.WindowTextColor); return;
+            SetBrush("IslandBg", SystemColors.WindowColor); SetBrush("IslandText", SystemColors.WindowTextColor); SetBrush("IslandMuted", SystemColors.WindowTextColor);
+            NativeThemeApplied = WindowTheme.Apply(this, false, true, SystemColors.WindowColor, SystemColors.WindowTextColor); return;
         }
-        SetBrush("Bg", dark ? "#121620" : "#F4F6FA"); SetBrush("Surface", dark ? "#1C2230" : "#FFFFFF");
-        SetBrush("Text", dark ? "#F0F3FA" : "#1C2636"); SetBrush("Muted", dark ? "#A2AFC4" : "#647187");
-        SetBrush("Line", dark ? "#30394B" : "#E4E9F1"); SetBrush("Accent", dark ? "#7D9DF0" : "#4D74D9");
-        SetBrush("Tint", dark ? "#2A3550" : "#EBF0FD");
+        SetBrush("Bg", dark ? "#111925" : "#F3F6FB"); SetBrush("Surface", dark ? "#1A2637" : "#FFFFFF");
+        SetBrush("Text", dark ? "#ECF2FC" : "#172640"); SetBrush("Muted", dark ? "#B0BFD3" : "#596C84");
+        SetBrush("Line", dark ? "#34445A" : "#DCE4EF"); SetBrush("Accent", dark ? "#91B5FF" : "#3567CF");
+        SetBrush("AccentText", dark ? "#101A2F" : "#FFFFFF"); SetBrush("Tint", dark ? "#243954" : "#E8EFFC");
         SetBrush("IslandBg", "#141821"); SetBrush("IslandText", "#FFFFFF"); SetBrush("IslandMuted", "#BDC6D7");
+        NativeThemeApplied = WindowTheme.Apply(this, dark, false, ((SolidColorBrush)Application.Current.Resources["Bg"]).Color, ((SolidColorBrush)Application.Current.Resources["Text"]).Color);
     }
     private static void SetBrush(string key, string color) => SetBrush(key, (Color)ColorConverter.ConvertFromString(color));
     private static void SetBrush(string key, Color color)
@@ -236,6 +244,7 @@ public partial class MainWindow : Window
     public void PreviewDockIdle(MemorySnapshot snapshot) { dockStatus.SetIdle(); dockStatus.SetMemory(snapshot); mini?.RefreshStatus(); }
     private void OpenOverlay(string title, bool settings, bool animate)
     {
+        if (Overlay.Visibility != Visibility.Visible) { overlayReturnFocus = Keyboard.FocusedElement; overlayReturnOffset = MainContent.VerticalOffset; }
         OverlayTitle.Text = title; SettingsPanel.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
         HistoryPanel.Visibility = settings ? Visibility.Collapsed : Visibility.Visible;
         Header.IsEnabled = MainContent.IsEnabled = Footer.IsEnabled = false; Overlay.Visibility = Visibility.Visible;
@@ -284,20 +293,37 @@ public partial class MainWindow : Window
         if (store.History.Count == 0) HistoryItems.Children.Add(new TextBlock { Text = "还没有整理记录。", TextWrapping = TextWrapping.Wrap });
         foreach (var item in store.History)
         {
-            var panel = new StackPanel();
-            panel.Children.Add(new TextBlock { Text = $"{item.Time:MM-dd HH:mm} · {item.Trigger} · {(item.Success ? "完成" : item.Cancelled ? "取消" : "失败 / 部分完成")}", FontWeight = FontWeights.SemiBold });
-            panel.Children.Add(new TextBlock { Text = $"可用内存 {Labels.Delta(item.AvailableChange)} · {item.Seconds:0.0}s", Margin = new Thickness(0, 6, 0, 4) });
-            panel.Children.Add(new TextBlock { Text = string.Join("\n", item.Steps.Select(s => $"{Labels.Name(s.Command)} {s.StatusHex}")) + (item.Error is null ? "" : "\n" + item.Error), TextWrapping = TextWrapping.Wrap, FontSize = 11 });
-            var border = new Border { Child = panel, CornerRadius = new CornerRadius(12), Padding = new Thickness(14), Margin = new Thickness(0, 0, 0, 10) };
-            border.SetResourceReference(Border.BackgroundProperty, "Tint"); HistoryItems.Children.Add(border);
+            HistoryItems.Children.Add(CreateHistoryCard(item));
         }
         OpenOverlay("整理历史", false, animate);
+    }
+    private static Border CreateHistoryCard(CleanupResult item)
+    {
+        var panel = new StackPanel();
+        var header = new Grid(); header.ColumnDefinitions.Add(new ColumnDefinition()); header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock { Text = $"{item.Time:MM-dd HH:mm}", FontWeight = FontWeights.SemiBold, FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
+        var outcome = new TextBlock { Text = item.Success ? "完成" : item.Cancelled ? "取消" : item.Steps.Any(step => step.Success) ? "部分完成" : "失败", FontSize = 11 };
+        var badge = new Border { Child = outcome, CornerRadius = new CornerRadius(7), Padding = new Thickness(8, 4, 8, 4) };
+        badge.SetResourceReference(Border.BackgroundProperty, "Tint"); Grid.SetColumn(badge, 1); header.Children.Add(badge); panel.Children.Add(header);
+        panel.Children.Add(new TextBlock { Text = "可用内存 " + Labels.Delta(item.AvailableChange), FontSize = 21, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 12, 0, 5), TextWrapping = TextWrapping.Wrap });
+        var meta = new TextBlock { Text = $"{item.Trigger} · {item.Seconds:0.0}s · {item.Steps.Count} 个已执行步骤", FontSize = 11, TextWrapping = TextWrapping.Wrap };
+        meta.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); panel.Children.Add(meta);
+        var detail = new TextBlock { Text = string.Join("\n", item.Steps.Select(step => $"{Labels.Name(step.Command)} · {step.Seconds:0.00}s · {step.StatusHex}")) + (item.Error is null ? "" : "\n" + item.Error), TextWrapping = TextWrapping.Wrap, FontSize = 11, Margin = new Thickness(0, 8, 0, 0) };
+        detail.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var expander = new Expander { Header = "查看步骤与返回码", Content = detail, Margin = new Thickness(0, 10, 0, 0) };
+        expander.SetResourceReference(Control.ForegroundProperty, "Muted"); panel.Children.Add(expander);
+        var card = new Border { Child = panel, CornerRadius = new CornerRadius(14), Padding = new Thickness(17), Margin = new Thickness(0, 0, 0, 12), BorderThickness = new Thickness(1) };
+        card.SetResourceReference(Border.BackgroundProperty, "Surface"); card.SetResourceReference(Border.BorderBrushProperty, "Line"); return card;
     }
     private void CloseOverlay_Click(object sender, RoutedEventArgs e) => CloseOverlay();
     public void CloseOverlay()
     {
+        if (Overlay.Visibility != Visibility.Visible) return;
         Overlay.Visibility = Visibility.Collapsed; Header.IsEnabled = MainContent.IsEnabled = Footer.IsEnabled = true;
-        CleanButton.Focus();
+        if (overlayReturnFocus is UIElement target && target.IsVisible && target.IsEnabled) target.Focus(); else SettingsButton.Focus();
+        // 焦点恢复不应把状态主视觉突然滚走。
+        var offset = overlayReturnOffset;
+        _ = Dispatcher.InvokeAsync(() => MainContent.ScrollToVerticalOffset(offset), DispatcherPriority.Loaded);
     }
     private void TryRefreshStartup()
     {
@@ -411,6 +437,12 @@ public partial class MainWindow : Window
     }
     private void Repository_Click(object sender, RoutedEventArgs e)
     { if (BuildInfo.Repository.Length == 0) { MessageBox.Show(this, "此开发构建尚未连接正式仓库。"); return; } OpenExternal(BuildInfo.Repository); }
+    private void ProjectLink_Click(object sender, RoutedEventArgs e)
+    {
+        var uri = ProjectLinks.Resolve((sender as Button)?.Tag as string, BuildInfo.Repository);
+        if (uri is null) { StatusText.Text = "链接配置无效，未打开外部页面。"; return; }
+        projectLinkOpener(uri);
+    }
     private void License_Click(object sender, RoutedEventArgs e)
     { var file = Path.Combine(AppContext.BaseDirectory, "LICENSE"); if (File.Exists(file)) OpenExternal(file); else MessageBox.Show(this, "请在正式发行包的 LICENSE 中查看 GPL-3.0 完整条款。"); }
     private static void OpenExternal(string value)

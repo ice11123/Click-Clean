@@ -2,6 +2,8 @@
 
 Windows 11 x64 的中文内存整理工具，使用 C#、.NET 10 和原生 WPF。
 
+原作者：**离子怪（ice11123）**。主窗口作者区提供三个使用不同矢量图标的入口：[GitHub 开源仓库](https://github.com/ice11123/Click-Clean)、[离子怪博客（blog2）](https://ice11123.github.io/blog_test2/)、[离子怪 GitHub 首页](https://github.com/ice11123)。链接仅在用户点击时由默认浏览器打开，不内嵌网页或下载外部视觉资源。
+
 主窗口提供完整状态与设置；底部整理岛是唯一的桌面快捷入口。薄胶囊固定在主屏任务栏上方中央，鼠标靠近浮出、离开收回，点击直接整理，没有附加按钮或菜单。支持手动整理，以及默认关闭的阈值清理和定时清理。
 
 ![浅色主窗口](docs/images/light-main.png)
@@ -79,4 +81,4 @@ Diagnostics 还提供 `--verify-updates 发布目录 输出目录`，验证从�
 
 ## 开源
 
-Copyright © 2026 ice11123 及 Click-Clean 贡献者。源码为 [GPL-3.0-only](LICENSE)，按许可证允许使用、复制、修改和分发，不提供担保。见 [品牌说明](BRANDING.md)、[第三方声明](THIRD-PARTY-NOTICES.md)、[贡献指南](CONTRIBUTING.md)、[安全说明](SECURITY.md) 和 [架构](docs/architecture.md)。项目独立实现 Windows API，不复制 PCL 或 Apple 资源。
+Copyright © 2026 离子怪（ice11123）及 Click-Clean 贡献者。源码为 [GPL-3.0-only](LICENSE)，按许可证允许使用、复制、修改和分发，不提供担保。见 [品牌说明](BRANDING.md)、[第三方声明](THIRD-PARTY-NOTICES.md)、[贡献指南](CONTRIBUTING.md)、[安全说明](SECURITY.md) 和 [架构](docs/architecture.md)。项目独立实现 Windows API，不复制 PCL 或 Apple 资源。

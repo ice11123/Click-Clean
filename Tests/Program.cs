@@ -195,6 +195,16 @@ await Check("灯色分档边界与未知、异常快照防御", () => {
     }
     return Task.CompletedTask;
 });
+await Check("作者链接准确分流，不接受未知键或不安全协议", () => {
+    const string repository = "https://github.com/ice11123/Click-Clean";
+    Assert(ProjectLinks.Resolve("repository", repository)?.AbsoluteUri == repository);
+    Assert(ProjectLinks.Resolve("blog", repository)?.AbsoluteUri == "https://ice11123.github.io/blog_test2/");
+    Assert(ProjectLinks.Resolve("author", repository)?.AbsoluteUri == "https://github.com/ice11123");
+    Assert(ProjectLinks.Author == "离子怪" && ProjectLinks.Resolve("unknown", repository) is null);
+    foreach (var value in new[] { "", "not-a-url", "file:///C:/Windows", "http://github.com/ice11123/Click-Clean", "https://user:password@example.com" })
+        Assert(ProjectLinks.Resolve("repository", value) is null);
+    return Task.CompletedTask;
+});
 Console.WriteLine($"全部通过：{passed}组测试（含7种组合及3种失败位置）。");
 
 sealed class FakeApi : IMemoryApi
