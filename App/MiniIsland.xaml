@@ -1,0 +1,14 @@
+<Window x:Class="ClickClean.MiniIsland" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:ClickClean"
+        Title="Click-Clean 即清 · 桌面岛" Width="356" Height="176" WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize" Topmost="False" ShowInTaskbar="False" ShowActivated="False" UseLayoutRounding="True" FontFamily="Segoe UI, Microsoft YaHei UI">
+  <Grid Margin="8" MouseLeftButtonDown="Drag_Click" MouseMove="Drag_Move" MouseLeftButtonUp="Drag_Release">
+    <Grid.RowDefinitions><RowDefinition Height="108"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <local:IslandView x:Name="Island" ToolTip="拖动调整位置；点击下方按钮打开主窗口。"/>
+    <Border x:Name="Actions" Grid.Row="1" Background="#141821" CornerRadius="18" HorizontalAlignment="Center" Padding="4" Margin="0,0,0,3" Visibility="Collapsed">
+      <StackPanel Orientation="Horizontal">
+        <Button Content="打开" Click="Open_Click" Foreground="White" Background="#242B38" Padding="13,5" MinHeight="30" Margin="2"/>
+        <Button x:Name="CleanButton" Content="即刻整理" Click="Clean_Click" Foreground="White" Background="#416ED9" Padding="13,5" MinHeight="30" Margin="2"/>
+        <Button Content="收起" Click="Hide_Click" Foreground="White" Background="#242B38" Padding="13,5" MinHeight="30" Margin="2"/>
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>ClickClean</AssemblyName><Product>Click-Clean 即清</Product><Description>Windows 11 内存整理工具</Description>
+    <StartupObject>ClickClean.Program</StartupObject>
+    <ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon>Assets\ClickClean.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier><SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun><EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <Copyright>Copyright © 2026 ice11123 and Click-Clean contributors</Copyright><Company>Click-Clean</Company>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\Core\ClickClean.Core.csproj" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Velopack" Version="1.2.158" />
+    <AssemblyMetadata Include="UpdateRepository" Value="$(RepositoryUrl)" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,34 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本 x.y.z（可信 main 分支）'
+        required: true
+permissions:
+  contents: read
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          global-json-file: global.json
+      - name: Build immutable release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') { throw '版本格式无效' }
+          gh release view "v$env:RELEASE_VERSION" 2>$null
+          if ($LASTEXITCODE -eq 0) { throw '版本已存在，不覆盖已发布资产' }
+          ./build.ps1 -Version $env:RELEASE_VERSION -SkipInstaller -OutputRoot ./dist
+          $assets = @(Get-ChildItem ./dist/*Portable.zip,./dist/*Source.zip,./dist/SHA256SUMS.txt,./dist/releases/*.nupkg,./dist/releases/releases.win.json | ForEach-Object FullName)
+          gh release create "v$env:RELEASE_VERSION" @assets --target main --title "Click-Clean $env:RELEASE_VERSION" --notes-file CHANGELOG.md
+          if ($LASTEXITCODE -ne 0) { throw '发布失败' }

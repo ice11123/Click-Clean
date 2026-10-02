@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows7.0": {
+      "Velopack": {
+        "type": "Direct",
+        "requested": "[1.2.158, )",
+        "resolved": "1.2.158",
+        "contentHash": "wQN38beVrAf0WzFMnZtl7UmwxqwaJ7xVYypqITdOI4YUTYch2UvE+xAjg9msfaitVDtgfWeIcGsjRNQ65C03ZQ=="
+      },
+      "clickclean.core": {
+        "type": "Project"
+      }
+    },
+    "net10.0-windows7.0/win-x64": {}
+  }
+}

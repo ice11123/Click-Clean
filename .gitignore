@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+dist/
+.tools/
+.git/
+*.user
+*.suo
+*.pfx
+*.p12
+*.key
+*.log
+*.err
+.env
+test-results/
+App/Assets/*.ico

@@ -1,0 +1,39 @@
+name: Windows build
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          global-json-file: global.json
+      - name: Build and package
+        shell: pwsh
+        run: ./build.ps1 -SkipInstaller -IncludePreview -OutputRoot ./dist
+      - name: Update transport verification
+        shell: pwsh
+        run: |
+          $job = Start-Process ./dist/Click-Clean-Preview/ClickClean.Preview.exe -ArgumentList "--verify-updates `"$((Resolve-Path ./dist/releases).Path)`" `"$((Resolve-Path ./dist).Path)/update-tests`"" -PassThru -WindowStyle Hidden
+          if (-not $job.WaitForExit(120000)) { $job.Kill(); throw '更新校验超时' }
+          if ($job.ExitCode -ne 0) { Get-Content ./dist/update-tests/failure.txt; throw '更新校验失败' }
+          Get-Content ./dist/update-tests/verification.json
+      - name: Dependency audit
+        shell: pwsh
+        run: dotnet list App/ClickClean.csproj package --vulnerable --include-transitive
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Click-Clean-win-x64
+          path: |
+            dist/*Portable.zip
+            dist/*Source.zip
+            dist/SHA256SUMS.txt
+            dist/releases/*.nupkg
+            dist/releases/releases.win.json
+          retention-days: 14
