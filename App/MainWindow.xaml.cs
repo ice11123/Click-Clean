@@ -103,7 +103,7 @@ public partial class MainWindow : Window
                     nextUpdateCheck = uptime.Elapsed.TotalSeconds + 6 * 3600;
                     _ = CheckUpdates(store.Settings.AutoDownloadUpdates);
                 }
-                if (store.Settings.AutoApplyHidden && !IsVisible && mini?.IsVisible != true && updates.Ready && !IsBusy)
+                if (store.Settings.AutoApplyHidden && !IsVisible && mini?.IsRevealed != true && updates.Ready && !IsBusy)
                     ApplyUpdate();
             }
             RefreshAutomationSummary();
@@ -204,6 +204,7 @@ public partial class MainWindow : Window
             activeAutomatic = false;
             CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = true;
             if (mini is not null) mini.CleanButton.IsEnabled = true;
+            mini?.SetState(islandTitle, islandDetail, false, false);
             CancelButton.Visibility = Visibility.Collapsed; CleanButton.Content = "即刻整理";
             RefreshMemory(); RefreshAutomationSummary(); UpdateChanged();
             if (exitRequested) TryExit();
@@ -229,8 +230,7 @@ public partial class MainWindow : Window
     public void SetIsland(string title, string detail, bool expanded, bool animate)
     {
         islandTitle = title; islandDetail = detail; islandExpanded = expanded;
-        MainIsland.SetState(title, detail, expanded, animate && MotionEnabled);
-        mini?.SetState(title, detail, expanded, animate && MotionEnabled);
+        mini?.SetState(title, detail, IsBusy, animate && MotionEnabled);
     }
     private void OpenOverlay(string title, bool settings, bool animate)
     {
@@ -256,7 +256,7 @@ public partial class MainWindow : Window
         {
             StartupCheck.IsChecked = store.Settings.Startup; MotionCheck.IsChecked = store.Settings.ReduceMotion;
             ThemeCombo.SelectedIndex = store.Settings.Theme switch { "light" => 1, "dark" => 2, _ => 0 };
-            IslandCheck.IsChecked = store.Settings.MiniIsland; TopmostCheck.IsChecked = store.Settings.IslandTopmost;
+            IslandCheck.IsChecked = store.Settings.MiniIsland;
             CloseToTrayCheck.IsChecked = store.Settings.CloseToTray;
             UpdateCheck.IsChecked = store.Settings.CheckUpdates; DownloadCheck.IsChecked = store.Settings.AutoDownloadUpdates;
             ApplyHiddenCheck.IsChecked = store.Settings.AutoApplyHidden;
@@ -327,11 +327,11 @@ public partial class MainWindow : Window
     {
         if (loadingSettings) return;
         store.Settings.ReduceMotion = MotionCheck.IsChecked == true; store.Settings.MiniIsland = IslandCheck.IsChecked == true;
-        store.Settings.IslandTopmost = TopmostCheck.IsChecked == true; store.Settings.CloseToTray = CloseToTrayCheck.IsChecked == true;
+        store.Settings.CloseToTray = CloseToTrayCheck.IsChecked == true;
         store.Settings.CheckUpdates = UpdateCheck.IsChecked == true; store.Settings.AutoDownloadUpdates = DownloadCheck.IsChecked == true;
         store.Settings.AutoApplyHidden = ApplyHiddenCheck.IsChecked == true;
         if (store.Settings.MiniIsland) ShowIsland(); else mini?.Hide();
-        if (mini is not null) mini.Topmost = store.Settings.IslandTopmost;
+        if (mini is not null) mini.MotionAllowed = MotionEnabled;
         if (!MotionEnabled) SetIsland(islandTitle, islandDetail, islandExpanded, false);
         SaveSettings(); SetSampling();
     }
@@ -370,18 +370,15 @@ public partial class MainWindow : Window
     }
     public void ShowIsland()
     {
-        mini ??= new MiniIsland(ShowMain, async () => await Cleanup(Enum.GetValues<MemoryCommand>()), () => {
-            store.Settings.MiniIsland = false; mini?.Hide(); SaveSettings(); SetSampling();
-        }, position => { store.Settings.IslandLeft = position.X; store.Settings.IslandTop = position.Y; SaveSettings(); });
-        mini.Topmost = store.Settings.IslandTopmost;
+        if (mini is null) {
+            mini = new MiniIsland(async () => { lastInputWasPointer = true; await Cleanup(Enum.GetValues<MemoryCommand>(), "底部岛"); });
+            mini.RevealChanged += SetSampling;
+        }
         mini.MotionAllowed = MotionEnabled;
-        if (store.Settings.IslandLeft is { } x && store.Settings.IslandTop is { } y) mini.SetPosition(x, y);
-        mini.SetState(islandTitle, islandDetail, islandExpanded, false); mini.CleanButton.IsEnabled = !IsBusy;
+        mini.SetState(islandTitle, islandDetail, IsBusy, false); mini.CleanButton.IsEnabled = !IsBusy;
         mini.Show(); SetSampling();
     }
-    private void ResetIsland_Click(object sender, RoutedEventArgs e)
-    { store.Settings.IslandLeft = store.Settings.IslandTop = null; ShowIsland(); mini!.ResetPosition(); SaveSettings(); }
-    private void SetSampling() => timer.Interval = TimeSpan.FromSeconds(IsVisible && WindowState != WindowState.Minimized ? 1 : mini?.IsVisible == true ? 3 : 10);
+    private void SetSampling() => timer.Interval = TimeSpan.FromSeconds(IsVisible && WindowState != WindowState.Minimized ? 1 : mini?.IsVisible == true && mini.IsRevealed ? 3 : 10);
     private async Task CheckUpdates(bool download)
     {
         if (applying) return;

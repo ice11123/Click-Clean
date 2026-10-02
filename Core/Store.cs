@@ -4,12 +4,11 @@ namespace ClickClean.Core;
 
 public sealed class UserSettings
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public bool Startup { get; set; }
     public string Theme { get; set; } = "system";
     public bool ReduceMotion { get; set; }
-    public bool MiniIsland { get; set; }
-    public bool IslandTopmost { get; set; }
+    public bool MiniIsland { get; set; } = true;
     public bool CloseToTray { get; set; } = true;
     public bool CheckUpdates { get; set; } = true;
     public bool AutoDownloadUpdates { get; set; } = true;
@@ -17,16 +16,14 @@ public sealed class UserSettings
     public AutomationSettings Automation { get; set; } = new();
     public MemoryCommand[] SelectedSteps { get; set; } = Enum.GetValues<MemoryCommand>();
     public DateTimeOffset? LastCleanupUtc { get; set; }
-    public double? IslandLeft { get; set; }
-    public double? IslandTop { get; set; }
     public void Validate()
     {
+        // 首次升级启用新的底部入口；以后仍尊重用户关闭选择。
+        if (SchemaVersion < 2) { MiniIsland = true; SchemaVersion = 2; }
         Theme = Theme is "light" or "dark" ? Theme : "system";
         Automation = (Automation ?? new()).Validated();
         SelectedSteps = (SelectedSteps ?? []).Where(Enum.IsDefined).Distinct().Order().ToArray();
         if (SelectedSteps.Length == 0) SelectedSteps = Enum.GetValues<MemoryCommand>();
-        if (IslandLeft is { } x && !double.IsFinite(x)) IslandLeft = null;
-        if (IslandTop is { } y && !double.IsFinite(y)) IslandTop = null;
     }
 }
 

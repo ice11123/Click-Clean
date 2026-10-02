@@ -143,6 +143,34 @@ await Check("历史上限及原子保存往返", () => {
     } finally { Directory.Delete(root, true); }
     return Task.CompletedTask;
 });
+await Check("底部岛靠近浮出、离开延迟收回和边界迟滞", () => {
+    var policy = new DockRevealPolicy();
+    Assert(!policy.Evaluate(false, false, false, 0));
+    Assert(policy.Evaluate(true, false, false, 1));
+    Assert(policy.Evaluate(false, true, false, 1.1));
+    Assert(policy.Evaluate(false, false, false, 1.2));
+    Assert(!policy.Evaluate(false, false, false, 1.4));
+    Assert(!policy.Evaluate(false, true, false, 1.5));
+    return Task.CompletedTask;
+});
+await Check("底部岛全屏抑制、复位及无效时钟防御", () => {
+    var policy = new DockRevealPolicy();
+    Assert(!policy.Evaluate(true, true, true, 0));
+    Assert(policy.Evaluate(true, false, false, 1));
+    Assert(!policy.Evaluate(false, false, false, 0.5));
+    Assert(policy.Evaluate(true, false, false, 2));
+    Assert(!policy.Evaluate(true, true, false, double.NaN));
+    policy.Reset(); Assert(!policy.Revealed);
+    return Task.CompletedTask;
+});
+await Check("旧岛设置升级、新版关闭选择持久化", () => {
+    var legacy = new UserSettings { SchemaVersion = 1, MiniIsland = false, Startup = true };
+    legacy.Validate(); Assert(legacy.SchemaVersion == 2 && legacy.MiniIsland && legacy.Startup);
+    legacy.MiniIsland = false; legacy.Validate(); Assert(!legacy.MiniIsland);
+    var restored = System.Text.Json.JsonSerializer.Deserialize<UserSettings>(System.Text.Json.JsonSerializer.Serialize(legacy))!;
+    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 2);
+    return Task.CompletedTask;
+});
 Console.WriteLine($"全部通过：{passed}组测试（含7种组合及3种失败位置）。");
 
 sealed class FakeApi : IMemoryApi

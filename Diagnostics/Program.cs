@@ -14,6 +14,7 @@ public static class Program
         if (args.Length == 2 && args[0] == "--acceptance") { RunUpdateCheck(() => AcceptanceCheck.Run(args[1]), Path.ChangeExtension(args[1], ".failure.txt")); return; }
         if (args.Length == 2 && args[0] == "--startup-probe") { File.WriteAllText(args[1], JsonSerializer.Serialize(new { Admin = WindowsMemoryApi.IsAdmin(), ProcessId = Environment.ProcessId })); return; }
         if (args.Length == 3 && args[0] == "--verify-updates") { RunUpdateCheck(() => UpdateVerification.Check(args[1], args[2]), Path.Combine(args[2], "failure.txt")); return; }
+        if (args.Length == 3 && args[0] == "--update-installed") { RunUpdateCheck(() => UpdateVerification.ApplyInstalled(args[1], args[2]), Path.ChangeExtension(args[2], ".failure.txt")); return; }
         if (args.Length == 4 && args[0] == "--apply-update-fixture") { RunUpdateCheck(() => UpdateVerification.ApplyFixture(args[1], args[2], args[3]), args[3]); return; }
         var output = args.Length == 2 && args[0] == "--capture" ? Path.GetFullPath(args[1]) : null;
         var root = output is null ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClickCleanPreview") : Path.Combine(output, "preview-data");
@@ -38,6 +39,8 @@ public static class Program
         Directory.CreateDirectory(output); var checks = new List<string>();
         void Assert(bool value, string text) { if (!value) throw new InvalidOperationException(text); checks.Add(text); }
         var before = new MemorySnapshot(32UL << 30, 12UL << 30, 21UL << 30, 48UL << 30);
+        window.DesktopIsland?.PreviewReveal(false);
+        await DockVerification.Check(output, checks);
         window.ShowResult(new(DateTimeOffset.Now, before, before with { Available = 13UL << 30 }, [new(MemoryCommand.StandbyCache, 0, 0.1)], false, null, 0.1) { Trigger = "预览（模拟）" });
         await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         foreach (var theme in new[] { "light", "dark" })
@@ -45,7 +48,7 @@ public static class Program
             store.Settings.Theme = theme; window.ApplyTheme(); window.CloseOverlay();
             window.SetIsland($"即清 · 内存 {before.Load:0}%", "", false, false); window.RenderTo(Path.Combine(output, theme + "-main.png"));
             window.SetIsland("正在刷新修改页", "阈值整理 · 等待系统返回", true, false); window.RenderTo(Path.Combine(output, theme + "-running.png"));
-            if (window.DesktopIsland is { } mini) { mini.UpdateLayout(); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); }
+            if (window.DesktopIsland is { } mini) { mini.PreviewReveal(true); mini.UpdateLayout(); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); }
             foreach (var section in new[] { "appearance", "automation", "updates", "about" })
             {
                 window.OpenSettings(); window.ShowSettingsSection(section);
@@ -65,14 +68,21 @@ public static class Program
         window.CloseOverlay(); window.ShowResult(new(DateTimeOffset.Now, before, null, [new(MemoryCommand.WorkingSets, 0, 0.1)], false, "整理后快照不可用", 0.1));
         Assert(((TextBlock)window.FindName("ResultDelta")).Text.Contains("未知"), "快照失败不伪造零变化");
         window.RenderTo(Path.Combine(output, "unknown-result.png"));
-        window.DesktopIsland?.Hide(); window.Hide(); Assert(window.SamplingSeconds == 10, "仅托盘时降低采样频率");
+        window.Hide(); window.DesktopIsland?.ResumePointerSampling();
+        Assert(window.SamplingSeconds == 10, "底部岛收起时降低内存采样频率");
+        Assert(window.DesktopIsland?.PointerPollingActive == true, "性能采样期间实际启用鼠标靠近监听");
         await Task.Delay(10000);
         var process = Process.GetCurrentProcess(); var cpu = process.TotalProcessorTime; var clock = Stopwatch.StartNew();
         await Task.Delay(30000); process.Refresh();
+        var dockWasRevealed = window.DesktopIsland?.IsRevealed;
+        var dockWasListening = window.DesktopIsland?.PointerPollingActive;
+        window.DesktopIsland?.Hide();
+        Assert(window.DesktopIsland?.PointerPollingActive == false && window.SamplingSeconds == 10, "完全关闭桌面入口停止鼠标采样");
         File.WriteAllText(Path.Combine(output, "verification.json"), JsonSerializer.Serialize(new {
             Checks = checks, WorkingSetMiB = process.WorkingSet64 / 1048576d, PrivateMiB = process.PrivateMemorySize64 / 1048576d,
             HiddenCpuMachinePercent = (process.TotalProcessorTime - cpu).TotalSeconds / clock.Elapsed.TotalSeconds / Environment.ProcessorCount * 100,
-            SampleSeconds = clock.Elapsed.TotalSeconds, Note = "截图倍率属于离屏渲染检查，不代替真实 Windows 显示缩放验收。"
+            SampleSeconds = clock.Elapsed.TotalSeconds, DockListening = dockWasListening, DockRevealed = dockWasRevealed,
+            Note = "CPU测量期间实际启用底部岛鼠标监听。截图倍率属于离屏渲染检查，不代替真实 Windows 显示缩放验收。"
         }, new JsonSerializerOptions { WriteIndented = true }));
         window.DisposeResources();
     }

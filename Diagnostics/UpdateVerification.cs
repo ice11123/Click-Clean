@@ -58,7 +58,7 @@ internal static class UpdateVerification
         if (!WindowsMemoryApi.IsAdmin()) throw new InvalidOperationException("更新重启实测需要管理员授权。");
         root = Path.GetFullPath(root);
         if (!File.Exists(Path.Combine(root, ".click-clean-update-fixture"))) throw new InvalidOperationException("只允许更新带专用标记的测试目录。");
-        var process = new FixtureProcess(Path.Combine(root, "current", "ClickClean.exe"));
+        var process = new TargetProcess(Path.Combine(root, "current", "ClickClean.exe"));
         var locator = new WindowsVelopackLocator(process, null);
         var manager = new UpdateManager(new SimpleFileSource(new DirectoryInfo(feedPath)), null, locator);
         var update = await manager.CheckForUpdatesAsync() ?? throw new InvalidOperationException("测试目录未发现新版本。");
@@ -67,7 +67,46 @@ internal static class UpdateVerification
         manager.ApplyUpdatesAndRestart(update.TargetFullRelease, ["--tray"]);
     }
 
-    private sealed class FixtureProcess(string executable) : IProcessImpl
+    // 本机交付通道：仅更新当前用户已注册的默认安装，不执行安装向导或真实整理。
+    public static async Task ApplyInstalled(string feedPath, string resultPath)
+    {
+        if (!WindowsMemoryApi.IsAdmin()) throw new InvalidOperationException("本机更新需要管理员授权。");
+        using var registration = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\ClickClean_is1");
+        var root = Path.GetFullPath(registration?.GetValue("InstallLocation") as string ?? throw new InvalidOperationException("没有已注册的 Click-Clean 安装。"));
+        var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "ClickClean");
+        if (!root.TrimEnd(Path.DirectorySeparatorChar).Equals(expected, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("只允许更新已核验的当前用户默认安装。");
+        var executable = Path.Combine(root, "current", "ClickClean.exe");
+        if (!File.Exists(executable) || !File.Exists(Path.Combine(root, "Update.exe"))) throw new InvalidOperationException("安装布局不完整，不替换文件。");
+        var locator = new WindowsVelopackLocator(new TargetProcess(executable), null);
+        var manager = new UpdateManager(new SimpleFileSource(new DirectoryInfo(Path.GetFullPath(feedPath))), null, locator);
+        var update = await manager.CheckForUpdatesAsync() ?? throw new InvalidOperationException("本地发布源没有比已安装版更新的正式包。");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        await manager.DownloadUpdatesAsync(update, null, timeout.Token);
+        var asset = update.TargetFullRelease;
+        if (Path.GetFileName(asset.FileName) != asset.FileName) throw new InvalidDataException("更新文件名无效。");
+        var package = Path.Combine(locator.PackagesDir!, asset.FileName);
+        await using (var stream = File.OpenRead(package)) {
+            if (stream.Length != asset.Size || !Convert.ToHexString(await SHA256.HashDataAsync(stream, timeout.Token)).Equals(asset.SHA256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("更新包校验失败，不替换文件。");
+        }
+        var before = manager.CurrentVersion?.ToString();
+        var exit = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true }; exit.ArgumentList.Add("--exit");
+        using (var command = Process.Start(exit) ?? throw new InvalidOperationException("无法请求旧实例正常退出。")) await command.WaitForExitAsync(timeout.Token);
+        while (InstalledRunning(executable)) await Task.Delay(250, timeout.Token);
+        File.WriteAllText(resultPath, JsonSerializer.Serialize(new { From = before, To = asset.Version.ToString(), SHA256 = asset.SHA256, Downloaded = true, GracefulExit = true, Applying = true }));
+        manager.ApplyUpdatesAndRestart(asset, ["--tray"]);
+    }
+    private static bool InstalledRunning(string executable)
+    {
+        foreach (var process in Process.GetProcessesByName("ClickClean")) {
+            using (process) {
+                try { if (!process.HasExited && string.Equals(process.MainModule?.FileName, executable, StringComparison.OrdinalIgnoreCase)) return true; }
+                catch (InvalidOperationException) { /* 检查期间已经退出。 */ }
+            }
+        }
+        return false;
+    }
+    private sealed class TargetProcess(string executable) : IProcessImpl
     {
         public string GetCurrentProcessPath() => executable;
         public uint GetCurrentProcessId() => (uint)Environment.ProcessId;
