@@ -59,7 +59,7 @@ dotnet run --project Tests/ClickClean.Tests.csproj -c Release
 .\build.ps1 -OutputRoot .\dist -IncludePreview
 ```
 
-没有 Inno Setup 可加 `-SkipInstaller`，生成可更新便携包和源码包。CLI 通过 `.config/dotnet-tools.json` 固定版本还原；图标由原创生成脚本产生，无需下载图片。
+没有 Inno Setup 可加 `-SkipInstaller`，生成可更新便携包和源码包。CLI 通过 `.config/dotnet-tools.json` 固定版本还原；图标源图片内置于 `App/Assets/ClickClean.png`，`build-assets.ps1` 离线导出多尺寸 ICO，无需下载图片。
 
 ```powershell
 dotnet run --project Diagnostics/ClickClean.Preview.csproj -c Release

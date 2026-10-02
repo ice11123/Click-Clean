@@ -11,6 +11,7 @@
     <Copyright>Copyright © 2026 ice11123 and Click-Clean contributors</Copyright><Company>Click-Clean</Company>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\Core\ClickClean.Core.csproj" /></ItemGroup>
+  <ItemGroup><Resource Include="Assets\ClickClean.png" /></ItemGroup>
   <ItemGroup><PackageReference Include="Velopack" Version="1.2.158" />
     <AssemblyMetadata Include="UpdateRepository" Value="$(RepositoryUrl)" />
   </ItemGroup>
