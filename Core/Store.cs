@@ -4,7 +4,8 @@ namespace ClickClean.Core;
 
 public sealed class UserSettings
 {
-    public int SchemaVersion { get; set; } = 3;
+    public int SchemaVersion { get; set; } = 4;
+    public bool AutomationNeedsConfirmation { get; set; }
     public bool Startup { get; set; }
     public string Theme { get; set; } = "system";
     public bool ReduceMotion { get; set; }
@@ -14,7 +15,7 @@ public sealed class UserSettings
     public bool AutoDownloadUpdates { get; set; }
     public bool AutoApplyHidden { get; set; }
     public AutomationSettings Automation { get; set; } = new();
-    public MemoryCommand[] SelectedSteps { get; set; } = [];
+    public MemoryCommand[] SelectedSteps { get; set; } = [MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache];
     public DateTimeOffset? LastCleanupUtc { get; set; }
     public void Validate()
     {
@@ -22,7 +23,12 @@ public sealed class UserSettings
         if (SchemaVersion < 2) { MiniIsland = true; SchemaVersion = 2; }
         // 兼容读取旧字段，但新版只允许用户点击下载和重启应用。
         AutoDownloadUpdates = false; AutoApplyHidden = false;
-        if (SchemaVersion < 3) SchemaVersion = 3;
+        if (SchemaVersion < 4)
+        {
+            // 不把旧版已启用的温和自动规则无声升级为裁剪和刷盘。
+            AutomationNeedsConfirmation |= Automation?.ThresholdEnabled == true || Automation?.TimerEnabled == true;
+            SchemaVersion = 4;
+        }
         Theme = Theme is "light" or "dark" ? Theme : "system";
         Automation = (Automation ?? new()).Validated();
         SelectedSteps = (SelectedSteps ?? []).Where(Enum.IsDefined).Distinct().Order().ToArray();
@@ -67,7 +73,11 @@ public sealed class Store
             var path = Path.Combine(Root, "settings.json");
             if (!File.Exists(path)) return new();
             if (new FileInfo(path).Length > 1_000_000) throw new IOException("设置文件过大。");
-            return JsonSerializer.Deserialize<UserSettings>(File.ReadAllText(path)) ?? new();
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var settings = document.RootElement.Deserialize<UserSettings>() ?? new();
+            // 老文件没有 schema 时也必须走升级确认，不能误认成新安装。
+            if (!document.RootElement.TryGetProperty(nameof(UserSettings.SchemaVersion), out _)) settings.SchemaVersion = 1;
+            return settings;
         }
         catch (Exception ex) { Log("读取设置失败，使用默认值：" + ex.Message); return new(); }
     }

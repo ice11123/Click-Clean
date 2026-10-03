@@ -1,7 +1,7 @@
 <Window x:Class="ClickClean.MiniIsland" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:ClickClean"
         Title="Click-Clean 即清 · 底部岛" Width="216" Height="72" WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize" Topmost="True" ShowInTaskbar="False" ShowActivated="False" UseLayoutRounding="True" FontFamily="Segoe UI, Microsoft YaHei UI">
   <Grid ClipToBounds="True">
-    <Button x:Name="CleanButton" Width="184" Height="36" MinHeight="0" Padding="0" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,12" Click="Clean_Click" Opacity="0" IsHitTestVisible="False" AutomationProperties.Name="点击底部岛，检查内存压力并按需整理待机缓存" PreviewMouseLeftButtonDown="Press" PreviewMouseLeftButtonUp="Release">
+    <Button x:Name="CleanButton" Width="184" Height="36" MinHeight="0" Padding="0" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,12" Click="Clean_Click" Opacity="0" IsHitTestVisible="False" AutomationProperties.Name="点击底部岛，执行原版三步内存整理" PreviewMouseLeftButtonDown="Press" PreviewMouseLeftButtonUp="Release">
       <Button.RenderTransform><TransformGroup><ScaleTransform x:Name="PressScale"/><TranslateTransform x:Name="Slide" Y="48"/></TransformGroup></Button.RenderTransform>
       <Button.RenderTransformOrigin>0.5,0.5</Button.RenderTransformOrigin>
       <Button.Template><ControlTemplate TargetType="Button">

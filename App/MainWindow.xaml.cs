@@ -73,7 +73,7 @@ public partial class MainWindow : Window
         {
             var menu = new System.Windows.Forms.ContextMenuStrip();
             menu.Items.Add("打开 Click-Clean 即清", null, (_, _) => Dispatcher.BeginInvoke(ShowMain));
-            menu.Items.Add("检查并整理", null, (_, _) => Dispatcher.BeginInvoke(async () => await RoutineCleanup()));
+            menu.Items.Add("一键整理", null, (_, _) => Dispatcher.BeginInvoke(async () => await RoutineCleanup()));
             menu.Items.Add("显示 / 收起桌面岛", null, (_, _) => Dispatcher.BeginInvoke(ToggleIsland));
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             menu.Items.Add("退出", null, (_, _) => Dispatcher.BeginInvoke(TryExit));
@@ -103,7 +103,7 @@ public partial class MainWindow : Window
             }
             if (!preview)
             {
-                var trigger = automation.Evaluate(snapshot?.Load, IsBusy || applying || updates.Busy || store.Settings.Automation.FullCleanup);
+                var trigger = automation.Evaluate(snapshot?.Load, IsBusy || applying || updates.Busy || store.Settings.AutomationNeedsConfirmation);
                 if (trigger is not null)
                     _ = RoutineCleanup(trigger, true);
                 if (store.Settings.CheckUpdates && uptime.Elapsed.TotalSeconds >= nextUpdateCheck)
@@ -171,9 +171,10 @@ public partial class MainWindow : Window
     private async Task RoutineCleanup(string trigger = "手动", bool automatic = false)
     {
         if (IsBusy || applying) return;
+        if (automatic && store.Settings.AutomationNeedsConfirmation) return;
         MemorySnapshot? snapshot = null;
         try { snapshot = memory.Read(); } catch (Exception ex) { store.Log("压力检查失败：" + ex.Message); }
-        var plan = RoutineCleanupPolicy.Evaluate(snapshot, automatic ? store.Settings.Automation.ThresholdPercent : RoutineCleanupPolicy.DefaultPressurePercent);
+        var plan = RoutineCleanupPolicy.Evaluate(snapshot, store.Settings.Automation.ThresholdPercent, automatic);
         StatusText.Text = plan.Message;
         if (plan.Skipped)
         {
@@ -242,7 +243,7 @@ public partial class MainWindow : Window
             observingMemory = false; CancelButton.Content = "取消后续";
             CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = true;
             if (mini is not null) { mini.CleanButton.IsEnabled = true; mini.IsWorking = false; }
-            CancelButton.Visibility = Visibility.Collapsed; CleanButton.Content = "检查并整理";
+            CancelButton.Visibility = Visibility.Collapsed; CleanButton.Content = "一键整理";
             RefreshMemory(); RefreshAutomationSummary(); UpdateChanged();
             if (exitRequested) TryExit();
         }
@@ -309,7 +310,7 @@ public partial class MainWindow : Window
             ThresholdInput.Text = a.ThresholdPercent.ToString(); SustainInput.Text = a.SustainSeconds.ToString();
             CooldownInput.Text = a.CooldownMinutes.ToString(); IntervalInput.Text = a.IntervalMinutes.ToString(); FullAutoCheck.IsChecked = a.FullCleanup;
             FullAutoCheck.IsEnabled = false;
-            AutomationFeedback.Text = a.FullCleanup ? "旧全量自动策略已暂停；保存设置即确认切换为仅待机缓存自动尝试，或关闭两个开关后保存。" : "";
+            AutomationFeedback.Text = store.Settings.AutomationNeedsConfirmation ? "本版自动整理改为原版三步，旧自动配置已暂停。已有阈值保留，默认值为55%；请核对后确认保存，或关闭两个开关后保存。" : "";
         }
         finally { loadingSettings = false; }
         ShowSettingsSection("appearance"); OpenOverlay("设置", true, animate);
@@ -404,17 +405,17 @@ public partial class MainWindow : Window
     }
     private void SaveAutomation_Click(object sender, RoutedEventArgs e)
     {
-        if (!ReadNumber(ThresholdInput, 60, 98, out var threshold) || !ReadNumber(SustainInput, 15, 600, out var sustain) ||
+        if (!ReadNumber(ThresholdInput, 55, 98, out var threshold) || !ReadNumber(SustainInput, 15, 600, out var sustain) ||
             !ReadNumber(IntervalInput, 15, 1440, out var interval) || !ReadNumber(CooldownInput, 5, 240, out var cooldown))
         { AutomationFeedback.Text = "请输入标注范围内的整数；设置尚未改变。"; return; }
-        var previous = store.Settings.Automation;
         var next = new AutomationSettings { ThresholdEnabled = ThresholdCheck.IsChecked == true, TimerEnabled = TimerCheck.IsChecked == true,
-            ThresholdPercent = threshold, SustainSeconds = sustain, IntervalMinutes = interval, CooldownMinutes = cooldown, FullCleanup = false };
-        if ((!previous.ThresholdEnabled && next.ThresholdEnabled || !previous.TimerEnabled && next.TimerEnabled || !previous.FullCleanup && next.FullCleanup) && !preview)
+            ThresholdPercent = threshold, SustainSeconds = sustain, IntervalMinutes = interval, CooldownMinutes = cooldown, FullCleanup = true };
+        if ((next.ThresholdEnabled || next.TimerEnabled) && !preview)
         {
-            if (MessageBox.Show(this, "自动模式先检查压力，只在达到门槛时尝试清理待机缓存；不裁剪全系统或刷盘，不保证降低使用率或提高性能。是否启用？", "启用自动清理", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (MessageBox.Show(this, $"自动模式在达到 {threshold}% 占用门槛时执行原版三步：裁剪全系统工作集、刷新修改页、清理待机缓存。\n\n这可能造成缺页、短暂卡顿和磁盘忙碌，不保证提速。55% 在正常使用中也可能经常达到；冷却 {cooldown} 分钟。确认保存并启用所选自动规则？", "确认自动三步整理", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         }
         store.Settings.Automation = next;
+        store.Settings.AutomationNeedsConfirmation = false;
         automation.Configure(next);
         if (activeAutomatic && !next.TimerEnabled && !next.ThresholdEnabled) cancellation?.Cancel();
         SaveSettings(); RefreshAutomationSummary(); AutomationFeedback.Text = preview ? "已保存预览设置，不会自动执行系统整理。" : "已保存。软件运行期间生效；连续失败暂停后可再次保存恢复。";
@@ -424,11 +425,11 @@ public partial class MainWindow : Window
     private void RefreshAutomationSummary()
     {
         var a = store.Settings.Automation;
-        if (a.FullCleanup && (a.ThresholdEnabled || a.TimerEnabled) && !IsBusy)
-            StatusText.Text = "旧全量自动策略已暂停，请在设置中确认保守策略；尚未替你修改开关。";
-        AutomationSummary.Text = a.FullCleanup ? "旧全量自动策略已暂停，请在自动清理设置中确认新策略。" : automation.Paused ? "自动清理已暂停：连续失败 3 次，请在设置中恢复。" :
+        if (store.Settings.AutomationNeedsConfirmation && (a.ThresholdEnabled || a.TimerEnabled) && !IsBusy)
+            StatusText.Text = "旧自动配置已暂停：本版恢复原版三步，请在设置中核对阈值并确认保存。";
+        AutomationSummary.Text = store.Settings.AutomationNeedsConfirmation ? "自动规则变更待确认；已有阈值和开关保留，尚未恢复执行。" : automation.Paused ? "自动清理已暂停：连续失败 3 次，请在设置中恢复。" :
             $"阈值：{(a.ThresholdEnabled ? a.ThresholdPercent + "% / " + a.SustainSeconds + "秒" : "关闭")}    定时：{(a.TimerEnabled ? a.IntervalMinutes + "分钟" : "关闭")}";
-        if (a.TimerEnabled && automation.TimerRemaining is { } remaining && !automation.Paused) AutomationSummary.Text += $"\n下一周期约 {Math.Ceiling(remaining.TotalMinutes):0} 分钟后；冷却 {a.CooldownMinutes} 分钟。";
+        if (a.TimerEnabled && automation.TimerRemaining is { } remaining && !automation.Paused && !store.Settings.AutomationNeedsConfirmation) AutomationSummary.Text += $"\n下一周期约 {Math.Ceiling(remaining.TotalMinutes):0} 分钟后；冷却 {a.CooldownMinutes} 分钟。";
     }
     private void Island_Click(object sender, RoutedEventArgs e) => ToggleIsland();
     private void ToggleIsland()

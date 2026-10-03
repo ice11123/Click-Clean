@@ -1,5 +1,7 @@
 # Click-Clean 2.3 内存整理有效性复核与实施建议
 
+> 历史范围：本报告审查的是2.3.0保守方案。2.3.1按用户后续要求恢复原版三步、自动默认阈值55%；现行规则见README及CHANGELOG。下列系统内存原理仍供参考，但历史方案建议不是当前默认配置。
+
 日期：2026-10-03。按用户要求由 Astra 独立审计。范围为 `Core/MemoryEngine.cs`、`WindowsMemoryApi.cs`、`AutomationPolicy.cs`、`Store.cs`、`DockStatus.cs`、`App/MainWindow.xaml.cs` / `.xaml`、`Tests/Program.cs` 和上一轮 `docs/memory-review-astra.md`。本报告描述审查时的基线及建议，不代表建议已经实现；最终实现与验证以本轮主代理交付为准。
 
 本轮只读源码并查阅主来源，没有执行真实整理、读取用户历史、运行压力实验或改变用户设置。上一轮匿名历史数字没有在本轮重新验证，不用它证明效果。没有引入或复制 PCL 代码，也不改变项目现有 GPL 来源与归属。

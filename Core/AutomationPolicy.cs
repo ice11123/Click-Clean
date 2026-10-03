@@ -3,14 +3,16 @@ namespace ClickClean.Core;
 public sealed record AutomationSettings
 {
     public bool ThresholdEnabled { get; init; }
-    public int ThresholdPercent { get; init; } = 85;
+    public int ThresholdPercent { get; init; } = RoutineCleanupPolicy.DefaultPressurePercent;
     public int SustainSeconds { get; init; } = 60;
     public int CooldownMinutes { get; init; } = 30;
     public bool TimerEnabled { get; init; }
     public int IntervalMinutes { get; init; } = 60;
-    public bool FullCleanup { get; init; }
+    public bool FullCleanup { get; init; } = true;
     public AutomationSettings Validated() => this with {
-        ThresholdPercent = Math.Clamp(ThresholdPercent, 60, 98),
+        ThresholdPercent = Math.Clamp(ThresholdPercent, 55, 98),
+        // 兼容旧字段；新版自动步骤固定为原版三步，升级后需重新确认。
+        FullCleanup = true,
         SustainSeconds = Math.Clamp(SustainSeconds, 15, 600),
         CooldownMinutes = Math.Clamp(CooldownMinutes, 5, 240),
         IntervalMinutes = Math.Clamp(IntervalMinutes, 15, 1440)

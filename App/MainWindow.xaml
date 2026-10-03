@@ -85,7 +85,7 @@
                   <TextBlock Text="可用内存" FontSize="11" Foreground="{DynamicResource Muted}" Margin="0,5,0,0"/>
                 </StackPanel>
               </StackPanel>
-              <Button x:Name="CleanButton" Grid.Column="1" Content="检查并整理" Click="Clean_Click" VerticalAlignment="Center" Padding="14,8" MinHeight="36" Margin="10,0,0,0" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" BorderBrush="{DynamicResource Accent}" AutomationProperties.Name="检查内存压力，必要时尝试整理待机缓存"/>
+              <Button x:Name="CleanButton" Grid.Column="1" Content="一键整理" Click="Clean_Click" VerticalAlignment="Center" Padding="14,8" MinHeight="36" Margin="10,0,0,0" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" BorderBrush="{DynamicResource Accent}" AutomationProperties.Name="执行原版三步：裁剪工作集、刷新修改页、清理待机缓存"/>
             </Grid>
             <ProgressBar x:Name="MemoryBar" Height="4" Maximum="100" Foreground="{DynamicResource Text}" Background="{DynamicResource Line}" AutomationProperties.Name="物理内存使用率"/>
             <Grid Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -94,7 +94,7 @@
             </Grid>
           </StackPanel>
         </Border>
-        <TextBlock x:Name="StatusText" Text="低压力时跳过；必要时仅尝试整理待机缓存。" Style="{StaticResource Description}" Margin="0,12,0,16"/>
+        <TextBlock x:Name="StatusText" Text="默认原版三步整理，手动点击不受阈值限制；可能短暂卡顿或磁盘忙碌。" Style="{StaticResource Description}" Margin="0,12,0,16"/>
         <Border x:Name="ResultCard" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,16" Visibility="Collapsed" Margin="0,0,0,16">
           <StackPanel>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="ResultTitle" Text="最近结果" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="ResultMeta" Grid.Column="1" FontSize="10" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></Grid>
@@ -143,17 +143,17 @@
                 <Border Style="{StaticResource SectionRule}"/><TextBlock Text="启动与后台" FontWeight="SemiBold" Margin="0,0,0,8"/>
                 <CheckBox x:Name="StartupCheck" Style="{StaticResource Switch}" Content="登录后启动到托盘" Click="Startup_Click"/><TextBlock Text="以管理员权限运行，仅对当前账户生效。" Style="{StaticResource Description}" Margin="0,2,50,12"/>
                 <CheckBox x:Name="CloseToTrayCheck" Style="{StaticResource Switch}" Content="关闭主窗口时收起到托盘" Click="Preferences_Click"/><TextBlock Text="最小化仍保留任务栏。托盘可以打开、整理或完全退出。" Style="{StaticResource Description}" Margin="0,2,50,0"/>
-                <Border Style="{StaticResource SectionRule}"/><CheckBox x:Name="IslandCheck" Style="{StaticResource Switch}" Content="底部整理岛" Click="Preferences_Click"/><TextBlock Text="靠近主屏任务栏上方中央时浮出，点击检查压力并按需整理待机缓存。离开后收回，全屏应用期间不浮出。" Style="{StaticResource Description}" Margin="0,2,50,0"/>
+                <Border Style="{StaticResource SectionRule}"/><CheckBox x:Name="IslandCheck" Style="{StaticResource Switch}" Content="底部整理岛" Click="Preferences_Click"/><TextBlock Text="靠近主屏任务栏上方中央时浮出，点击执行原版三步整理。离开后收回，全屏应用期间不浮出。" Style="{StaticResource Description}" Margin="0,2,50,0"/>
               </StackPanel>
               <StackPanel x:Name="AutomationSection" Visibility="Collapsed">
-                <TextBlock Text="自动整理" Style="{StaticResource SectionTitle}"/><TextBlock Text="默认关闭。阈值或定时触发后先检查压力，仅尝试整理待机缓存；低压力跳过，整理后进入冷却，休眠恢复不补跑。" Style="{StaticResource Description}" Margin="0,0,0,20"/>
+                <TextBlock Text="自动整理" Style="{StaticResource SectionTitle}"/><TextBlock Text="默认关闭，默认阈值55%。阈值或定时触发后达到占用门槛才执行原版三步；低压力跳过，整理后进入冷却，休眠恢复不补跑。" Style="{StaticResource Description}" Margin="0,0,0,20"/>
                 <CheckBox x:Name="ThresholdCheck" Style="{StaticResource Switch}" Content="启用阈值清理"/>
-                <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,12,0"><TextBlock Text="已用内存阈值" FontSize="12"/><TextBlock Text="60～98%" Style="{StaticResource Description}"/><TextBox x:Name="ThresholdInput" IsEnabled="{Binding IsChecked, ElementName=ThresholdCheck}" AutomationProperties.Name="已用内存阈值百分比"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="持续超限" FontSize="12"/><TextBlock Text="15～600 秒" Style="{StaticResource Description}"/><TextBox x:Name="SustainInput" IsEnabled="{Binding IsChecked, ElementName=ThresholdCheck}" AutomationProperties.Name="持续超限秒数"/></StackPanel></Grid>
+                <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,12,0"><TextBlock Text="已用内存阈值" FontSize="12"/><TextBlock Text="55～98%" Style="{StaticResource Description}"/><TextBox x:Name="ThresholdInput" IsEnabled="{Binding IsChecked, ElementName=ThresholdCheck}" AutomationProperties.Name="已用内存阈值百分比"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="持续超限" FontSize="12"/><TextBlock Text="15～600 秒" Style="{StaticResource Description}"/><TextBox x:Name="SustainInput" IsEnabled="{Binding IsChecked, ElementName=ThresholdCheck}" AutomationProperties.Name="持续超限秒数"/></StackPanel></Grid>
                 <Border Style="{StaticResource SectionRule}" Margin="0,9,0,12"/><CheckBox x:Name="TimerCheck" Style="{StaticResource Switch}" Content="启用定时清理"/>
                 <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,12,0"><TextBlock Text="整理间隔" FontSize="12"/><TextBlock Text="15～1440 分钟" Style="{StaticResource Description}"/><TextBox x:Name="IntervalInput" IsEnabled="{Binding IsChecked, ElementName=TimerCheck}" AutomationProperties.Name="定时清理间隔分钟"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="清理冷却" FontSize="12"/><TextBlock Text="5～240 分钟" Style="{StaticResource Description}"/><TextBox x:Name="CooldownInput" AutomationProperties.Name="清理冷却分钟"/></StackPanel></Grid>
-                <Border Style="{StaticResource SectionRule}" Margin="0,9,0,15"/><CheckBox x:Name="FullAutoCheck" IsEnabled="False"><TextBlock Text="旧版全三步自动整理（已停用）" TextWrapping="Wrap"/></CheckBox>
-                <TextBlock Text="自动模式不会裁剪全系统工作集或刷新修改页，也不保证降低内存占用或提速。旧版全三步自动策略需重新保存确认后才恢复运行。" Style="{StaticResource Description}" Margin="0,5,0,18"/>
-                <Button Content="确认保守策略并保存" Click="SaveAutomation_Click" HorizontalAlignment="Left"/><TextBlock x:Name="AutomationFeedback" Style="{StaticResource Description}" Margin="0,12,0,0"/><TextBlock Text="连续自动失败 3 次会暂停，重新保存设置可恢复。软件完全退出后不会执行自动清理。" Style="{StaticResource Description}" Margin="0,14,0,0"/>
+                <Border Style="{StaticResource SectionRule}" Margin="0,9,0,15"/><CheckBox x:Name="FullAutoCheck" IsEnabled="False" Visibility="Collapsed"/>
+                <TextBlock Text="自动步骤：裁剪全系统工作集 → 刷新修改页 → 清理待机缓存。可能增加缺页与磁盘活动，不保证提速。升级前已开启的自动规则需核对参数后重新确认保存。" Style="{StaticResource Description}" Margin="0,5,0,18"/>
+                <Button Content="确认三步规则并保存" Click="SaveAutomation_Click" HorizontalAlignment="Left"/><TextBlock x:Name="AutomationFeedback" Style="{StaticResource Description}" Margin="0,12,0,0"/><TextBlock Text="连续自动失败 3 次会暂停，重新保存设置可恢复。软件完全退出后不会执行自动清理。" Style="{StaticResource Description}" Margin="0,14,0,0"/>
               </StackPanel>
               <StackPanel x:Name="UpdatesSection" Visibility="Collapsed">
                 <TextBlock Text="版本与更新" Style="{StaticResource SectionTitle}"/><TextBlock Text="从正式发布获取更新，由你决定下载和生效时机。" Style="{StaticResource Description}" Margin="0,0,0,20"/>

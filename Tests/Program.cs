@@ -7,6 +7,15 @@ async Task Check(string name, Func<Task> test)
 }
 void Assert(bool condition) { if (!condition) throw new Exception("断言失败"); }
 var all = Enum.GetValues<MemoryCommand>();
+await Check("手动快捷入口低占用也恢复原版三步", () => {
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 900, 200, 2000)).Commands.SequenceEqual(all));
+    return Task.CompletedTask;
+});
+await Check("默认自动阈值55且可合法保存，自动开关仍关闭", () => {
+    var defaults = new AutomationSettings();
+    Assert(defaults.ThresholdPercent == 55 && defaults.Validated().ThresholdPercent == 55 && !defaults.ThresholdEnabled && !defaults.TimerEnabled);
+    return Task.CompletedTask;
+});
 await Check("顺序固定、重复项目去重、权限恢复", async () => {
     var api = new FakeApi(); var result = await new MemoryEngine(api).RunAsync(all.Reverse().Concat(all));
     Assert(api.Calls.SequenceEqual(all) && result.Success && api.Restored);
@@ -78,21 +87,21 @@ await Check("默认关闭：高占用及多个周期均不自动触发", () => {
     return Task.CompletedTask;
 });
 await Check("阈值必须持续超限，瞬时波动重新计时", () => {
-    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true });
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, ThresholdPercent = 85 });
     Assert(policy.Evaluate(90, false) is null); clock.Advance(45); Assert(policy.Evaluate(90, false) is null);
     Assert(policy.Evaluate(84, false) is null); clock.Advance(10); Assert(policy.Evaluate(90, false) is null);
     clock.Advance(59); Assert(policy.Evaluate(90, false) is null); clock.Advance(1); Assert(policy.Evaluate(90, false) == "阈值");
     return Task.CompletedTask;
 });
 await Check("冷却与迟滞：持续高占用不反复触发", () => {
-    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, CooldownMinutes = 5 });
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, ThresholdPercent = 85, CooldownMinutes = 5 });
     policy.Evaluate(90, false); clock.Advance(60); Assert(policy.Evaluate(90, false) == "阈值"); policy.RecordCompletion(true, true);
     for (var i = 0; i < 10; i++) { clock.Advance(60); Assert(policy.Evaluate(90, false) is null); }
     policy.Evaluate(80, false); policy.Evaluate(90, false); clock.Advance(60); Assert(policy.Evaluate(90, false) == "阈值");
     return Task.CompletedTask;
 });
 await Check("定时与阈值相撞合并，忙碌时跳过不积压", () => {
-    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, TimerEnabled = true, IntervalMinutes = 15 });
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, ThresholdPercent = 85, TimerEnabled = true, IntervalMinutes = 15 });
     for (var i = 0; i < 14; i++) { policy.Evaluate(60, false); clock.Advance(60); }
     policy.Evaluate(90, false); clock.Advance(60); Assert(policy.Evaluate(90, false) == "阈值 + 定时");
     Assert(policy.Evaluate(90, false) is null);
@@ -128,7 +137,7 @@ await Check("设置与历史防御：空字段、越界与部分坏记录", () =
         File.WriteAllText(Path.Combine(root, "settings.json"), "{\"Theme\":null,\"Automation\":{\"ThresholdPercent\":-5,\"IntervalMinutes\":0},\"SelectedSteps\":null}");
         var good = new CleanupResult(DateTimeOffset.Now, new(1000, 100, 500, 2000), null, [new(MemoryCommand.StandbyCache, 0, 0)], false, "快照失败", 0);
         File.WriteAllText(Path.Combine(root, "history.json"), "[null,{\"Steps\":null},\"错误类型\"," + System.Text.Json.JsonSerializer.Serialize(good) + "]");
-        var store = new Store(root); Assert(store.Settings.Theme == "system" && store.Settings.Automation.ThresholdPercent == 60 && store.Settings.Automation.IntervalMinutes == 15);
+        var store = new Store(root); Assert(store.Settings.Theme == "system" && store.Settings.Automation.ThresholdPercent == 55 && store.Settings.Automation.IntervalMinutes == 15);
         Assert(store.Settings.SelectedSteps.Length == 0 && store.History.Count == 1 && store.History[0].AvailableChange is null);
         store.SaveSettings(); Assert(new Store(root).Settings.Theme == "system");
     } finally { Directory.Delete(root, true); }
@@ -165,10 +174,10 @@ await Check("底部岛全屏抑制、复位及无效时钟防御", () => {
 });
 await Check("旧岛设置升级、新版关闭选择持久化", () => {
     var legacy = new UserSettings { SchemaVersion = 1, MiniIsland = false, Startup = true };
-    legacy.Validate(); Assert(legacy.SchemaVersion == 3 && legacy.MiniIsland && legacy.Startup);
+    legacy.Validate(); Assert(legacy.SchemaVersion == 4 && legacy.MiniIsland && legacy.Startup);
     legacy.MiniIsland = false; legacy.Validate(); Assert(!legacy.MiniIsland);
     var restored = System.Text.Json.JsonSerializer.Deserialize<UserSettings>(System.Text.Json.JsonSerializer.Serialize(legacy))!;
-    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 3);
+    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 4);
     return Task.CompletedTask;
 });
 await Check("底部岛三阶段、严格两秒与采样更新不重置期限", () => {
@@ -207,7 +216,7 @@ await Check("作者链接准确分流，不接受未知键或不安全协议", (
 });
 await Check("默认与旧设置都只手动下载应用更新，空高级选择不回填三步", () => {
     var settings = new UserSettings { SchemaVersion = 2, AutoDownloadUpdates = true, AutoApplyHidden = true, MiniIsland = false, SelectedSteps = [] };
-    settings.Validate(); Assert(settings.SchemaVersion == 3 && !settings.AutoDownloadUpdates && !settings.AutoApplyHidden && settings.CheckUpdates && !settings.MiniIsland && settings.SelectedSteps.Length == 0);
+    settings.Validate(); Assert(settings.SchemaVersion == 4 && !settings.AutoDownloadUpdates && !settings.AutoApplyHidden && settings.CheckUpdates && !settings.MiniIsland && settings.SelectedSteps.Length == 0);
     settings.AutoDownloadUpdates = settings.AutoApplyHidden = true; settings.Validate(); Assert(!settings.AutoDownloadUpdates && !settings.AutoApplyHidden);
     var old = new UserSettings { SchemaVersion = 2, SelectedSteps = all }; old.Validate(); Assert(old.SelectedSteps.SequenceEqual(all));
     return Task.CompletedTask;
@@ -221,11 +230,47 @@ await Check("更新提示覆盖可用、下载、就绪、失败，整理期间�
     var failed = UpdatePresentation.Create(UpdatePhase.Failed, false, false, false, false); Assert(failed.Visible && failed.Action == UpdateAction.Check);
     return Task.CompletedTask;
 });
-await Check("快捷策略低压力或未知真正跳过，高压力仅选择待机缓存", () => {
-    foreach (var snapshot in new MemorySnapshot?[] { null, new(0, 0, 0, 0), new(1000, 1001, 0, 0), new(1000, 900, 200, 2000), new(1000, 151, 200, 2000) })
+await Check("自动55边界选择原版三步，未知读数仍安全跳过", () => {
+    foreach (var snapshot in new MemorySnapshot?[] { null, new(0, 0, 0, 0), new(1000, 1001, 0, 0) })
         Assert(RoutineCleanupPolicy.Evaluate(snapshot).Skipped);
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 150, 200, 2000)).Commands.SequenceEqual(new[] { MemoryCommand.StandbyCache }));
-    Assert(!RoutineCleanupPolicy.Evaluate(new(1000, 400, 200, 2000), 60).Skipped);
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 451, 200, 2000), automatic: true).Skipped);
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), automatic: true).Commands.SequenceEqual(all));
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 150, 200, 2000), automatic: true).Commands.SequenceEqual(all));
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 900, 200, 2000), automatic: false).Commands.SequenceEqual(all));
+    foreach (var invalid in new[] { 54, 99 }) {
+        try { RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), invalid, true); throw new Exception("非法门槛未拒绝"); }
+        catch (ArgumentOutOfRangeException) { }
+    }
+    return Task.CompletedTask;
+});
+await Check("55阈值持续60秒且需回落50才能重新武装", () => {
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, CooldownMinutes = 5 });
+    Assert(policy.Evaluate(54.99, false) is null); Assert(policy.Evaluate(55, false) is null);
+    clock.Advance(59); Assert(policy.Evaluate(55, false) is null); clock.Advance(1); Assert(policy.Evaluate(55, false) == "阈值");
+    policy.RecordCompletion(true, true);
+    for (var i = 0; i < 6; i++) { clock.Advance(60); Assert(policy.Evaluate(55, false) is null); }
+    Assert(policy.Evaluate(51, false) is null); Assert(policy.Evaluate(55, false) is null); clock.Advance(60); Assert(policy.Evaluate(55, false) is null);
+    Assert(policy.Evaluate(50, false) is null); Assert(policy.Evaluate(55, false) is null); clock.Advance(60); Assert(policy.Evaluate(55, false) == "阈值");
+    return Task.CompletedTask;
+});
+await Check("旧自动开关保留但需确认，旧阈值和手动选择不覆盖", () => {
+    foreach (var originalFull in new[] { false, true }) {
+        var old = new UserSettings { SchemaVersion = 3, SelectedSteps = [], Automation = new() { ThresholdEnabled = true, ThresholdPercent = 85, FullCleanup = originalFull } };
+        old.Validate(); Assert(old.SchemaVersion == 4 && old.AutomationNeedsConfirmation && old.Automation.ThresholdEnabled && old.Automation.ThresholdPercent == 85 && old.SelectedSteps.Length == 0 && old.Automation.FullCleanup);
+        old.AutomationNeedsConfirmation = false; old.Validate(); Assert(!old.AutomationNeedsConfirmation);
+    }
+    var defaults = new UserSettings(); defaults.Validate(); Assert(!defaults.AutomationNeedsConfirmation && defaults.SelectedSteps.SequenceEqual(all));
+    var disabled = new UserSettings { SchemaVersion = 3 }; disabled.Validate(); Assert(!disabled.AutomationNeedsConfirmation);
+    return Task.CompletedTask;
+});
+await Check("无schema的旧自动设置也必须确认，确认状态持久保存", () => {
+    var root = Path.Combine(Path.GetTempPath(), "ClickClean-schema4-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+    try {
+        File.WriteAllText(Path.Combine(root, "settings.json"), "{\"Automation\":{\"TimerEnabled\":true,\"ThresholdPercent\":72},\"SelectedSteps\":[]}");
+        var migrated = new Store(root); Assert(migrated.Settings.AutomationNeedsConfirmation && migrated.Settings.Automation.TimerEnabled && migrated.Settings.Automation.ThresholdPercent == 72);
+        migrated.SaveSettings(); Assert(new Store(root).Settings.AutomationNeedsConfirmation);
+        migrated.Settings.AutomationNeedsConfirmation = false; migrated.SaveSettings(); Assert(!new Store(root).Settings.AutomationNeedsConfirmation);
+    } finally { Directory.Delete(root, true); }
     return Task.CompletedTask;
 });
 await Check("真实复测保留即时、负值和实际间隔，权限在观测前恢复", async () => {

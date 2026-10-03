@@ -1,6 +1,6 @@
 # 架构与兼容性
 
-MainWindow、MiniIsland 与托盘快捷动作通过 RoutineCleanupPolicy 统一压力检查：低压力或未知跳过，高压力仅尝试待机缓存。手动高级操作经显式选择及警告确认后进入 MemoryEngine。引擎原子锁覆盖调用与复测，步骤失败即停，权限恢复后异步复测，观测错误与调用错误分开。AutomationPolicy 负责周期、持续、迟滞和冷却；旧全量自动暂停，待用户确认新保守策略，不静默擦除原设置。
+MainWindow、MiniIsland 与托盘快捷动作通过 RoutineCleanupPolicy 统一执行原版三步。手动点击不检查占用门槛，自动触发才按配置阈值（新默认55%）判断；未知或无效快照安全跳过。手动高级操作经显式选择及警告确认后进入 MemoryEngine。引擎原子锁覆盖调用与复测，步骤失败即停，权限恢复后异步复测，观测错误与调用错误分开。AutomationPolicy 负责周期、持续、迟滞和冷却；设置 schema 4 以 AutomationNeedsConfirmation 暂停旧已启用自动规则，待用户核对阈值并确认三步，不静默覆盖已有参数。FullCleanup 兼容旧字段但固定为三步。
 
 Core 不依赖 WPF：包含系统 API、引擎、结果、自动策略、设置及存储。App 负责 WPF、托盘、计划任务和 Velopack 集成。Tests 模拟 API 和时间；Diagnostics 独立提供无副作用界面预览与明确选择的真实系统检查。
 

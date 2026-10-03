@@ -53,13 +53,33 @@ public static class Program
         var defaultWidth = window.Width; var defaultHeight = window.Height;
         Assert(update.Checks == 1 && update.Downloads == 0 && update.Applies == 0, "首页加载自动检查，但不自动下载或应用（模拟服务）");
         var lastCleanup = store.Settings.LastCleanupUtc; var oldCount = store.History.Count;
+        memory.Available = 28UL << 30;
         ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Assert(memory.Calls.Count == 0 && memory.Privileges == 0 && !window.IsBusy && store.History.Count == oldCount && store.Settings.LastCleanupUtc == lastCleanup,
-            "低压力快捷入口真正跳过，不启权、不调用、不新增假成功历史或整理时间");
+        ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var lowManual = Stopwatch.StartNew(); while (window.IsBusy && lowManual.Elapsed.TotalSeconds < 3) await Task.Delay(10);
+        Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()) && memory.Privileges == 1 && !window.IsBusy && store.History.Count == oldCount + 1 && store.Settings.LastCleanupUtc == lastCleanup,
+            "低压力手动也按2/3/4执行原版三步，重复点击不并发；预览不修改真实整理时间");
+        memory.Calls.Clear();
         memory.Available = 4UL << 30;
         ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         var quick = Stopwatch.StartNew(); while (window.IsBusy && quick.Elapsed.TotalSeconds < 3) await Task.Delay(10);
-        Assert(!window.IsBusy && memory.Calls.SequenceEqual(new[] { MemoryCommand.StandbyCache }), "高压力快捷入口只执行待机缓存，不裁剪或刷盘");
+        Assert(!window.IsBusy && memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()), "高压力快捷入口同样按2/3/4执行原版三步");
+        Assert(store.Settings.Automation.ThresholdPercent == 55 && !store.Settings.Automation.ThresholdEnabled && !store.Settings.Automation.TimerEnabled, "新默认阈值55，自动开关仍默认关闭");
+        memory.Calls.Clear();
+        var automaticRoutine = typeof(MainWindow).GetMethod("RoutineCleanup", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("自动入口测试未找到实际执行方法。");
+        Task InvokeAutomatic() => (Task)automaticRoutine.Invoke(window, new object[] { "阈值（模拟）", true })!;
+        var automationPrivileges = memory.Privileges; var automationHistory = store.History.Count;
+        store.Settings.AutomationNeedsConfirmation = true;
+        await InvokeAutomatic();
+        Assert(memory.Calls.Count == 0 && memory.Privileges == automationPrivileges && store.History.Count == automationHistory, "旧自动配置待确认时不执行三步或新增历史");
+        store.Settings.AutomationNeedsConfirmation = false;
+        memory.Available = (32UL << 30) * 451 / 1000;
+        await InvokeAutomatic();
+        Assert(memory.Calls.Count == 0 && memory.Privileges == automationPrivileges && store.History.Count == automationHistory, "自动入口低于55门槛真正跳过，不计假清理");
+        memory.Available = (32UL << 30) * 450 / 1000;
+        await InvokeAutomatic();
+        Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()) && memory.Privileges == automationPrivileges + 1 && store.History.Count == automationHistory + 1, "自动入口达到55门槛按2/3/4执行，不再仅清待机");
         memory.Calls.Clear(); memory.Available = 12UL << 30;
         var buttons = new[] { "RepositoryLinkButton", "BlogLinkButton", "AuthorLinkButton" }.Select(name => (Button)window.FindName(name)).ToArray();
         foreach (var button in buttons) button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -161,6 +181,16 @@ public static class Program
                     Assert(((TextBox)window.FindName("ThresholdInput")).IsEnabled == (thresholdToggle.IsChecked == true) &&
                         ((TextBox)window.FindName("SustainInput")).IsEnabled == (thresholdToggle.IsChecked == true) &&
                         ((TextBox)window.FindName("IntervalInput")).IsEnabled == (timerToggle.IsChecked == true), "关闭自动策略时对应输入显示为停用：" + theme);
+                    var saveAutomatic = Descendants((FrameworkElement)window.FindName("AutomationSection")).OfType<Button>().Single(button => button.Content as string == "确认三步规则并保存");
+                    var thresholdField = (TextBox)window.FindName("ThresholdInput");
+                    thresholdToggle.IsChecked = true; thresholdField.Text = "54";
+                    saveAutomatic.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert(!store.Settings.Automation.ThresholdEnabled && store.Settings.Automation.ThresholdPercent == 55, "界面拒绝54且不悄悄保存或启用：" + theme);
+                    store.Settings.AutomationNeedsConfirmation = true; thresholdField.Text = "55";
+                    saveAutomatic.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert(store.Settings.Automation.ThresholdEnabled && store.Settings.Automation.ThresholdPercent == 55 && store.Settings.Automation.FullCleanup && !store.Settings.AutomationNeedsConfirmation, "界面可保存55并明确确认原版三步策略（预览不执行）：" + theme);
+                    thresholdToggle.IsChecked = false; saveAutomatic.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert(!store.Settings.Automation.ThresholdEnabled && !store.Settings.Automation.TimerEnabled, "关闭自动规则并保存后恢复停用：" + theme);
                 }
                 foreach (var scale in new[] { 1d, 1.25, 1.5, 1.75, 2d }) window.RenderTo(Path.Combine(output, $"{theme}-{section}-{scale * 100:0}.png"), scale);
             }
