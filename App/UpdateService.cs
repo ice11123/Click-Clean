@@ -15,7 +15,20 @@ public static class BuildInfo
     public static string Commit => typeof(BuildInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "开发构建";
 }
 
-public sealed class UpdateService : IDisposable
+public interface IApplicationUpdates : IDisposable
+{
+    bool Busy { get; }
+    bool Ready { get; }
+    bool Available { get; }
+    string Status { get; }
+    UpdatePhase Phase { get; }
+    event Action? Changed;
+    Task CheckAsync();
+    Task DownloadAsync();
+    Task ApplyAsync(bool tray);
+}
+
+public sealed class UpdateService : IApplicationUpdates
 {
     private readonly string statePath;
     public UpdateService(string statePath) => this.statePath = statePath;
@@ -29,15 +42,19 @@ public sealed class UpdateService : IDisposable
     public bool Ready { get; private set; }
     public bool Available => available is not null;
     public string Status { get; private set; } = "尚未检查更新";
+    public UpdatePhase Phase { get; private set; }
     public event Action? Changed;
-    private void Report(string value) { Status = value; Changed?.Invoke(); }
-    public async Task CheckAsync(bool download)
+    private void Report(string value, UpdatePhase phase) { Status = value; Phase = phase; Changed?.Invoke(); }
+    // 自动检查没有下载参数，无法因旧设置而进入下载或应用路径。
+    public Task CheckAsync() => RunAsync(false);
+    public Task DownloadAsync() => RunAsync(true);
+    private async Task RunAsync(bool download)
     {
         if (Interlocked.CompareExchange(ref gate, 1, 0) != 0) return;
         try
         {
             if (!Uri.TryCreate(BuildInfo.Repository, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != "github.com")
-            { Report("此开发构建尚未连接已验证的发布仓库。"); return; }
+            { Report("此开发构建尚未连接已验证的发布仓库。", UpdatePhase.Failed); return; }
             manager ??= new UpdateManager(new GithubSource(BuildInfo.Repository, null, false));
             if (readyAsset is null && manager.UpdatePendingRestart is { } pending && File.Exists(statePath))
             {
@@ -50,13 +67,13 @@ public sealed class UpdateService : IDisposable
                 catch { /* 待更新记录损坏时保持旧版运行，可重新检查下载。 */ }
             }
             Ready = readyAsset is not null;
-            Report("正在检查正式版本…");
+            Report("正在检查正式版本…", UpdatePhase.Checking);
             available = await manager.CheckForUpdatesAsync();
-            if (available is null) { Report(Ready ? "已下载的更新可重启生效。" : "当前已是最新正式版本。"); return; }
-            Report($"发现 {available.TargetFullRelease.Version}，可下载后重启生效。");
+            if (available is null) { Report(Ready ? "已下载更新，点击重启后生效。" : "当前已是最新正式版本。", Ready ? UpdatePhase.Ready : UpdatePhase.Current); return; }
+            Report($"发现 {available.TargetFullRelease.Version} · 由你决定是否下载更新。", Ready ? UpdatePhase.Ready : UpdatePhase.Available);
             if (download)
             {
-                Report("正在下载并校验更新，不会中断整理…");
+                Report("正在下载并校验更新，不会自动重启…", UpdatePhase.Downloading);
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
                 timeout.CancelAfter(TimeSpan.FromMinutes(15));
                 await manager.DownloadUpdatesAsync(available, null, timeout.Token);
@@ -68,15 +85,15 @@ public sealed class UpdateService : IDisposable
                 File.Move(statePath + ".tmp", statePath, true);
                 readyAsset = available.TargetFullRelease;
                 Ready = true;
-                Report("更新已就绪 · 短暂重启生效，无需安装向导。");
+                Report("更新已就绪 · 点击重启并更新，无需安装向导。", UpdatePhase.Ready);
             }
         }
         catch (Exception ex)
         {
             Ready = readyAsset is not null;
             Report(ex is Velopack.Exceptions.NotInstalledException
-                ? "这是未打包的开发目录；自动更新需使用正式安装版或 Velopack 便携版。"
-                : "更新未完成，现有版本不变：" + ex.Message);
+                ? "这是未打包的开发目录；应用内更新需使用正式安装版或 Velopack 便携版。"
+                : "更新未完成，现有版本不变：" + ex.Message, UpdatePhase.Failed);
         }
         finally { Volatile.Write(ref gate, 0); Changed?.Invoke(); }
     }

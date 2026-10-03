@@ -64,4 +64,9 @@ public sealed class AutomationPolicy(TimeProvider? time = null)
         lastAttempt = timerAnchor = clock.GetTimestamp(); highSince = null;
         if (automatic) ConsecutiveFailures = success ? 0 : ConsecutiveFailures + 1;
     }
+    public void RecordSkipped()
+    {
+        // 跳过推进周期与冷却，但不计失败，也不标记为一次真实整理。
+        lastAttempt = timerAnchor = clock.GetTimestamp(); highSince = null;
+    }
 }

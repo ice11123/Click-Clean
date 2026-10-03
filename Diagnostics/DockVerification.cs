@@ -71,6 +71,15 @@ internal static class DockVerification
                 Assert(island.BreathingActive && dot.HasAnimatedProperties, "浮出时呼吸灯启动原生透明度动画");
                 var firstOpacity = dot.Opacity; await Task.Delay(300);
                 Assert(Math.Abs(dot.Opacity - firstOpacity) > 0.03, "呼吸灯随时间柔和变化");
+                Assert(!island.BackgroundMotionActive, "浮出背景淡入完成后移除时钟，不保持装饰循环");
+                island.IsWorking = true;
+                Assert(island.BackgroundMotionActive, "整理态启用局部背景动效");
+                var shift = (TranslateTransform)island.FindName("AmbientShift"); var firstShift = shift.X;
+                await Task.Delay(200); Assert(Math.Abs(shift.X - firstShift) > 0.1, "整理背景局部移动，数字布局不移动");
+                MainWindow.Capture(island, Path.Combine(output, "dock-background-running.png"));
+                island.MotionAllowed = false; Assert(!island.BackgroundMotionActive && shift.X == 0, "减少动画立即移除整理背景时钟");
+                island.MotionAllowed = true; Assert(island.BackgroundMotionActive, "解除减少动画后按真实整理状态恢复背景");
+                island.IsWorking = false; await Task.Delay(220); Assert(!island.BackgroundMotionActive, "整理结束背景不持续动画");
                 foreach (var sample in new[] { (900UL, "#FF70CFA4"), (370UL, "#FFEEBE68"), (100UL, "#FFF27D7C") }) {
                     status.SetMemory(new(1000, sample.Item1, 500, 2000)); island.RefreshStatus();
                     Assert(((SolidColorBrush)dot.Fill).Color.ToString() == sample.Item2 && island.BreathingActive, "呼吸灯按占用分档且数字刷新不停止动画：" + sample.Item1);
@@ -90,9 +99,9 @@ internal static class DockVerification
                 Assert(Math.Abs(slide.Y - offset) < 1, "上浮中途移开，从当前位置反向收回不跳变");
                 await Task.Delay(220);
                 Assert(button.Opacity == 0 && slide.Y == 48, "收回动画在短时长内结束");
-                Assert(!island.BreathingActive && !dot.HasAnimatedProperties && !island.ResultTimerActive, "收起停止呼吸和结果计时，不持续渲染");
+                Assert(!island.BreathingActive && !dot.HasAnimatedProperties && !island.ResultTimerActive && !island.BackgroundMotionActive, "收起停止呼吸、背景和结果计时，不持续渲染");
                 island.PreviewReveal(true); island.Hide();
-                Assert(!island.BreathingActive && !dot.HasAnimatedProperties, "禁用入口后移除呼吸动画");
+                Assert(!island.BreathingActive && !dot.HasAnimatedProperties && !island.BackgroundMotionActive, "禁用入口后移除呼吸与背景动画");
             } else {
                 island.MotionAllowed = false; island.PreviewReveal(false);
                 island.PreviewPointer(new Point(island.Width / 2, island.Height - 5), false, 10);

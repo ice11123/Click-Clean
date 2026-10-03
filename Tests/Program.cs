@@ -65,7 +65,7 @@ await Check("前后快照读取异常保持准确反馈", async () => {
     try { await engine.RunAsync(all); throw new Exception("未报告快照失败"); } catch (IOException) { }
     Assert(!engine.IsRunning && api.Calls.Count == 0);
     api = new FakeApi { ReadFailure = 2 }; var result = await new MemoryEngine(api).RunAsync(all);
-    Assert(!result.Success && result.Error!.Contains("读取整理后内存失败") && result.Steps.Count == 3 && result.After is null && result.AvailableChange is null);
+    Assert(result.Success && result.ObservationError!.Contains("读取整理后内存失败") && result.Steps.Count == 3 && result.After is null && result.AvailableChange is null);
 });
 await Check("非法步骤及空选择被拒绝", async () => {
     foreach (var selected in new[] { Array.Empty<MemoryCommand>(), new[] { (MemoryCommand)99 } }) {
@@ -129,7 +129,7 @@ await Check("设置与历史防御：空字段、越界与部分坏记录", () =
         var good = new CleanupResult(DateTimeOffset.Now, new(1000, 100, 500, 2000), null, [new(MemoryCommand.StandbyCache, 0, 0)], false, "快照失败", 0);
         File.WriteAllText(Path.Combine(root, "history.json"), "[null,{\"Steps\":null},\"错误类型\"," + System.Text.Json.JsonSerializer.Serialize(good) + "]");
         var store = new Store(root); Assert(store.Settings.Theme == "system" && store.Settings.Automation.ThresholdPercent == 60 && store.Settings.Automation.IntervalMinutes == 15);
-        Assert(store.Settings.SelectedSteps.Length == 3 && store.History.Count == 1 && store.History[0].AvailableChange is null);
+        Assert(store.Settings.SelectedSteps.Length == 0 && store.History.Count == 1 && store.History[0].AvailableChange is null);
         store.SaveSettings(); Assert(new Store(root).Settings.Theme == "system");
     } finally { Directory.Delete(root, true); }
     return Task.CompletedTask;
@@ -165,10 +165,10 @@ await Check("底部岛全屏抑制、复位及无效时钟防御", () => {
 });
 await Check("旧岛设置升级、新版关闭选择持久化", () => {
     var legacy = new UserSettings { SchemaVersion = 1, MiniIsland = false, Startup = true };
-    legacy.Validate(); Assert(legacy.SchemaVersion == 2 && legacy.MiniIsland && legacy.Startup);
+    legacy.Validate(); Assert(legacy.SchemaVersion == 3 && legacy.MiniIsland && legacy.Startup);
     legacy.MiniIsland = false; legacy.Validate(); Assert(!legacy.MiniIsland);
     var restored = System.Text.Json.JsonSerializer.Deserialize<UserSettings>(System.Text.Json.JsonSerializer.Serialize(legacy))!;
-    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 2);
+    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 3);
     return Task.CompletedTask;
 });
 await Check("底部岛三阶段、严格两秒与采样更新不重置期限", () => {
@@ -205,6 +205,68 @@ await Check("作者链接准确分流，不接受未知键或不安全协议", (
         Assert(ProjectLinks.Resolve("repository", value) is null);
     return Task.CompletedTask;
 });
+await Check("默认与旧设置都只手动下载应用更新，空高级选择不回填三步", () => {
+    var settings = new UserSettings { SchemaVersion = 2, AutoDownloadUpdates = true, AutoApplyHidden = true, MiniIsland = false, SelectedSteps = [] };
+    settings.Validate(); Assert(settings.SchemaVersion == 3 && !settings.AutoDownloadUpdates && !settings.AutoApplyHidden && settings.CheckUpdates && !settings.MiniIsland && settings.SelectedSteps.Length == 0);
+    settings.AutoDownloadUpdates = settings.AutoApplyHidden = true; settings.Validate(); Assert(!settings.AutoDownloadUpdates && !settings.AutoApplyHidden);
+    var old = new UserSettings { SchemaVersion = 2, SelectedSteps = all }; old.Validate(); Assert(old.SelectedSteps.SequenceEqual(all));
+    return Task.CompletedTask;
+});
+await Check("更新提示覆盖可用、下载、就绪、失败，整理期间不能重启", () => {
+    Assert(!UpdatePresentation.Create(UpdatePhase.Current, false, false, false, false).Visible);
+    var found = UpdatePresentation.Create(UpdatePhase.Available, true, false, false, false); Assert(found.Visible && found.Enabled && found.Action == UpdateAction.Download);
+    var downloading = UpdatePresentation.Create(UpdatePhase.Downloading, true, false, true, false); Assert(downloading.Visible && !downloading.Enabled);
+    var ready = UpdatePresentation.Create(UpdatePhase.Ready, true, true, false, false); Assert(ready.Action == UpdateAction.Apply && ready.Enabled);
+    Assert(!UpdatePresentation.Create(UpdatePhase.Ready, true, true, false, true).Enabled);
+    var failed = UpdatePresentation.Create(UpdatePhase.Failed, false, false, false, false); Assert(failed.Visible && failed.Action == UpdateAction.Check);
+    return Task.CompletedTask;
+});
+await Check("快捷策略低压力或未知真正跳过，高压力仅选择待机缓存", () => {
+    foreach (var snapshot in new MemorySnapshot?[] { null, new(0, 0, 0, 0), new(1000, 1001, 0, 0), new(1000, 900, 200, 2000), new(1000, 151, 200, 2000) })
+        Assert(RoutineCleanupPolicy.Evaluate(snapshot).Skipped);
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 150, 200, 2000)).Commands.SequenceEqual(new[] { MemoryCommand.StandbyCache }));
+    Assert(!RoutineCleanupPolicy.Evaluate(new(1000, 400, 200, 2000), 60).Skipped);
+    return Task.CompletedTask;
+});
+await Check("真实复测保留即时、负值和实际间隔，权限在观测前恢复", async () => {
+    var api = new FakeApi { ReadValue = read => read switch { 1 => 100, 2 => 120, _ => 90 } };
+    var result = await new MemoryEngine(api).RunAsync(all, followUpDelay: TimeSpan.FromMilliseconds(20), observing: () => Assert(api.Restored));
+    Assert(result.Success && result.AvailableChange == 20 && result.FollowUpChange == -10 && result.FollowUpSeconds >= 0.015 && result.CommitChange == 0);
+    Assert(result.ObservationError is null);
+});
+await Check("复测失败不改写已成功调用，即时值不可用时仍可复测", async () => {
+    var failed = await new MemoryEngine(new FakeApi { ReadFailure = 3 }).RunAsync(all, followUpDelay: TimeSpan.Zero);
+    Assert(failed.Success && failed.AvailableChange == 20 && failed.FollowUp is null && failed.FollowUpSeconds is null && failed.ObservationError!.Contains("复测不可用"));
+    var instantFailed = await new MemoryEngine(new FakeApi { ReadFailure = 2 }).RunAsync(all, followUpDelay: TimeSpan.Zero);
+    Assert(instantFailed.Success && instantFailed.AvailableChange is null && instantFailed.FollowUpChange == 20 && instantFailed.ObservationError!.Contains("读取整理后"));
+});
+await Check("取消复测不撤销成功调用，观测期间保持并发保护", async () => {
+    using var cancel = new CancellationTokenSource(); var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var api = new FakeApi(); var engine = new MemoryEngine(api);
+    var task = engine.RunAsync(all, cancellation: cancel.Token, followUpDelay: TimeSpan.FromSeconds(5), observing: () => entered.SetResult());
+    await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert(engine.IsRunning && api.Restored);
+    try { await engine.RunAsync(all); throw new Exception("观察期间允许并发"); } catch (InvalidOperationException) { }
+    cancel.Cancel(); var result = await task;
+    Assert(result.Success && !result.Cancelled && result.FollowUp is null && result.ObservationError!.Contains("已取消复测") && !engine.IsRunning);
+});
+await Check("跳过自动周期不计失败、不标记实际调用，旧全量配置仍可识别", () => {
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { TimerEnabled = true, IntervalMinutes = 15 });
+    policy.RecordCompletion(false, true); policy.RecordSkipped(); Assert(policy.ConsecutiveFailures == 1);
+    clock.Advance(60); Assert(policy.Evaluate(90, false) is null);
+    var previous = new UserSettings { Automation = new() { FullCleanup = true, ThresholdEnabled = true } }; previous.Validate(); Assert(previous.Automation.FullCleanup);
+    return Task.CompletedTask;
+});
+await Check("新观测历史往返兼容旧记录，拒绝坏复测间隔", () => {
+    var before = new MemorySnapshot(1000, 100, 500, 2000);
+    var result = new CleanupResult(DateTimeOffset.Now, before, before with { Available = 120 }, [new(MemoryCommand.StandbyCache, 0, 0)], false, null, 0) {
+        FollowUp = before with { Available = 90 }, FollowUpSeconds = 3.1, ObservationError = "观测提示"
+    };
+    var restored = System.Text.Json.JsonSerializer.Deserialize<CleanupResult>(System.Text.Json.JsonSerializer.Serialize(result))!;
+    Assert(Store.ValidResult(restored) && restored.FollowUpChange == -10 && restored.AvailableChange == 20 && restored.FollowUpSeconds == 3.1);
+    Assert(!Store.ValidResult(result with { FollowUpSeconds = double.NaN }) && !Store.ValidResult(result with { FollowUpSeconds = null }));
+    Assert(Store.ValidResult(result with { FollowUp = null, FollowUpSeconds = null }));
+    return Task.CompletedTask;
+});
 Console.WriteLine($"全部通过：{passed}组测试（含7种组合及3种失败位置）。");
 
 sealed class FakeApi : IMemoryApi
@@ -212,12 +274,13 @@ sealed class FakeApi : IMemoryApi
     public List<MemoryCommand> Calls { get; } = new();
     public Func<MemoryCommand, int> ExecuteFunc { get; set; } = _ => 0;
     public ulong AfterAvailable { get; init; } = 120;
+    public Func<int, ulong>? ReadValue { get; init; }
     public int ReadFailure { get; init; }
     public bool Restored { get; private set; }
     private int reads;
     public MemorySnapshot Read() {
         reads++; if (reads == ReadFailure) throw new IOException("模拟快照异常");
-        return new(1000, reads == 1 ? 100 : AfterAvailable, 500, 2000);
+        return new(1000, ReadValue?.Invoke(reads) ?? (reads == 1 ? 100 : AfterAvailable), 500, 2000);
     }
     public IDisposable EnablePrivilege() => new Scope(() => Restored = true);
     public int Execute(MemoryCommand command) { Calls.Add(command); return ExecuteFunc(command); }

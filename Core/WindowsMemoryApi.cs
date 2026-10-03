@@ -17,7 +17,11 @@ public sealed class WindowsMemoryApi : IMemoryApi
         if (!GetPerformanceInfo(ref performance, performance.Size)) throw new Win32Exception(Marshal.GetLastWin32Error());
         return new(memory.TotalPhysical, memory.AvailablePhysical,
             checked((ulong)performance.CommitTotal * (ulong)performance.PageSize),
-            checked((ulong)performance.CommitLimit * (ulong)performance.PageSize));
+            checked((ulong)performance.CommitLimit * (ulong)performance.PageSize)) {
+                SystemCache = checked((ulong)performance.SystemCache * (ulong)performance.PageSize),
+                KernelPaged = checked((ulong)performance.KernelPaged * (ulong)performance.PageSize),
+                KernelNonpaged = checked((ulong)performance.KernelNonpaged * (ulong)performance.PageSize)
+            };
     }
 
     public static bool IsAdmin()

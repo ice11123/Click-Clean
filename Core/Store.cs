@@ -4,26 +4,28 @@ namespace ClickClean.Core;
 
 public sealed class UserSettings
 {
-    public int SchemaVersion { get; set; } = 2;
+    public int SchemaVersion { get; set; } = 3;
     public bool Startup { get; set; }
     public string Theme { get; set; } = "system";
     public bool ReduceMotion { get; set; }
     public bool MiniIsland { get; set; } = true;
     public bool CloseToTray { get; set; } = true;
     public bool CheckUpdates { get; set; } = true;
-    public bool AutoDownloadUpdates { get; set; } = true;
+    public bool AutoDownloadUpdates { get; set; }
     public bool AutoApplyHidden { get; set; }
     public AutomationSettings Automation { get; set; } = new();
-    public MemoryCommand[] SelectedSteps { get; set; } = Enum.GetValues<MemoryCommand>();
+    public MemoryCommand[] SelectedSteps { get; set; } = [];
     public DateTimeOffset? LastCleanupUtc { get; set; }
     public void Validate()
     {
         // 首次升级启用新的底部入口；以后仍尊重用户关闭选择。
         if (SchemaVersion < 2) { MiniIsland = true; SchemaVersion = 2; }
+        // 兼容读取旧字段，但新版只允许用户点击下载和重启应用。
+        AutoDownloadUpdates = false; AutoApplyHidden = false;
+        if (SchemaVersion < 3) SchemaVersion = 3;
         Theme = Theme is "light" or "dark" ? Theme : "system";
         Automation = (Automation ?? new()).Validated();
         SelectedSteps = (SelectedSteps ?? []).Where(Enum.IsDefined).Distinct().Order().ToArray();
-        if (SelectedSteps.Length == 0) SelectedSteps = Enum.GetValues<MemoryCommand>();
     }
 }
 
@@ -99,7 +101,11 @@ public sealed class Store
         result.Steps.All(s => s is not null && Enum.IsDefined(s.Command) && double.IsFinite(s.Seconds) && s.Seconds >= 0) &&
         double.IsFinite(result.Seconds) && result.Seconds >= 0 &&
         result.Before.Total <= long.MaxValue && result.Before.Available <= result.Before.Total &&
-        (result.After is null || result.After.Total <= long.MaxValue && result.After.Available <= result.After.Total);
+        result.Before.Commit <= long.MaxValue &&
+        (result.After is null || result.After.Total <= long.MaxValue && result.After.Available <= result.After.Total && result.After.Commit <= long.MaxValue) &&
+        (result.FollowUp is null || result.FollowUp.Total <= long.MaxValue && result.FollowUp.Available <= result.FollowUp.Total && result.FollowUp.Commit <= long.MaxValue) &&
+        (result.FollowUpSeconds is null || double.IsFinite(result.FollowUpSeconds.Value) && result.FollowUpSeconds >= 0) &&
+        (result.FollowUp is null || result.FollowUpSeconds is not null);
     private void Save(string name, object value)
     {
         lock (gate)

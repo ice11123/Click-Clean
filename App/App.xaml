@@ -1,10 +1,12 @@
 <Application x:Class="ClickClean.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" ShutdownMode="OnExplicitShutdown">
   <Application.Resources>
-    <SolidColorBrush x:Key="Bg" Color="#F3F6FB"/><SolidColorBrush x:Key="Surface" Color="White"/>
-    <SolidColorBrush x:Key="Text" Color="#172640"/><SolidColorBrush x:Key="Muted" Color="#596C84"/>
-    <SolidColorBrush x:Key="Line" Color="#DCE4EF"/><SolidColorBrush x:Key="Accent" Color="#3567CF"/>
-    <SolidColorBrush x:Key="AccentText" Color="White"/><SolidColorBrush x:Key="Tint" Color="#E8EFFC"/>
-    <SolidColorBrush x:Key="IslandBg" Color="#141821"/><SolidColorBrush x:Key="IslandText" Color="White"/><SolidColorBrush x:Key="IslandMuted" Color="#BDC6D7"/>
+    <SolidColorBrush x:Key="Bg" Color="#F5F2EC"/><SolidColorBrush x:Key="Surface" Color="White"/>
+    <SolidColorBrush x:Key="Text" Color="#16243C"/><SolidColorBrush x:Key="Muted" Color="#53647A"/>
+    <SolidColorBrush x:Key="Line" Color="#E0DAD2"/><SolidColorBrush x:Key="Accent" Color="#A62E3A"/>
+    <SolidColorBrush x:Key="AccentText" Color="White"/><SolidColorBrush x:Key="Tint" Color="#F6E8EA"/>
+    <SolidColorBrush x:Key="DetailAccent" Color="#96641F"/>
+    <SolidColorBrush x:Key="IslandBg" Color="#FEF8F3"/><SolidColorBrush x:Key="IslandText" Color="#16243C"/><SolidColorBrush x:Key="IslandMuted" Color="#53647A"/>
+    <SolidColorBrush x:Key="IslandBorder" Color="#D8B784"/><SolidColorBrush x:Key="IslandHoverBorder" Color="#A62E3A"/><SolidColorBrush x:Key="IslandGlow" Color="#E9BE6C"/>
     <Style TargetType="TextBox">
       <Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
       <Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="12,10"/><Setter Property="Margin" Value="0,5,0,10"/>

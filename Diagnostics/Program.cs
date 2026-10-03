@@ -11,6 +11,15 @@ public static class Program
     public static void Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "--system-check") { SystemCheck(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--memory-read") {
+            RunUpdateCheck(() => {
+                var api = new WindowsMemoryApi(); var samples = Enumerable.Range(0, 10).Select(_ => api.Read()).ToArray();
+                if (samples.Any(value => value.Total == 0 || value.Available > value.Total || value.SystemCache is null || value.KernelPaged is null || value.KernelNonpaged is null))
+                    throw new InvalidDataException("只读系统内存样本无效。");
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { ReadOnly = true, Samples = samples }, new JsonSerializerOptions { WriteIndented = true }));
+                return Task.CompletedTask;
+            }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
         if (args.Length == 2 && args[0] == "--acceptance") { RunUpdateCheck(() => AcceptanceCheck.Run(args[1]), Path.ChangeExtension(args[1], ".failure.txt")); return; }
         if (args.Length == 2 && args[0] == "--startup-probe") { File.WriteAllText(args[1], JsonSerializer.Serialize(new { Admin = WindowsMemoryApi.IsAdmin(), ProcessId = Environment.ProcessId })); return; }
         if (args.Length == 3 && args[0] == "--verify-updates") { RunUpdateCheck(() => UpdateVerification.Check(args[1], args[2]), Path.Combine(args[2], "failure.txt")); return; }
@@ -21,11 +30,13 @@ public static class Program
         Directory.CreateDirectory(root);
         var store = new Store(root); var app = new App(preview: true); app.InitializeComponent();
         var openedLinks = new List<Uri>();
-        var window = new MainWindow(store, verification: true, projectLinkOpener: output is null ? null : openedLinks.Add); app.MainWindow = window;
+        var fakeUpdates = output is null ? null : new FakeApplicationUpdates();
+        var fakeMemory = output is null ? null : new TrackingMemoryApi();
+        var window = new MainWindow(store, verification: true, memoryApi: fakeMemory, projectLinkOpener: output is null ? null : openedLinks.Add, updateOverride: fakeUpdates); app.MainWindow = window;
         window.Loaded += async (_, _) => {
             window.ShowIsland();
             if (output is null) return;
-            try { await Capture(window, store, output, openedLinks); app.Shutdown(); }
+            try { await Capture(window, store, output, openedLinks, fakeUpdates!, fakeMemory!); app.Shutdown(); }
             catch (Exception ex) { File.WriteAllText(Path.Combine(output, "failure.txt"), ex.ToString()); app.Shutdown(1); }
         };
         app.Run(window);
@@ -35,11 +46,21 @@ public static class Program
         try { action().GetAwaiter().GetResult(); }
         catch (Exception ex) { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(failurePath))!); File.WriteAllText(failurePath, ex.ToString()); Environment.ExitCode = 1; }
     }
-    private static async Task Capture(MainWindow window, Store store, string output, List<Uri> openedLinks)
+    private static async Task Capture(MainWindow window, Store store, string output, List<Uri> openedLinks, FakeApplicationUpdates update, TrackingMemoryApi memory)
     {
         Directory.CreateDirectory(output); var checks = new List<string>();
         void Assert(bool value, string text) { if (!value) throw new InvalidOperationException(text); checks.Add(text); }
         var defaultWidth = window.Width; var defaultHeight = window.Height;
+        Assert(update.Checks == 1 && update.Downloads == 0 && update.Applies == 0, "首页加载自动检查，但不自动下载或应用（模拟服务）");
+        var lastCleanup = store.Settings.LastCleanupUtc; var oldCount = store.History.Count;
+        ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert(memory.Calls.Count == 0 && memory.Privileges == 0 && !window.IsBusy && store.History.Count == oldCount && store.Settings.LastCleanupUtc == lastCleanup,
+            "低压力快捷入口真正跳过，不启权、不调用、不新增假成功历史或整理时间");
+        memory.Available = 4UL << 30;
+        ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var quick = Stopwatch.StartNew(); while (window.IsBusy && quick.Elapsed.TotalSeconds < 3) await Task.Delay(10);
+        Assert(!window.IsBusy && memory.Calls.SequenceEqual(new[] { MemoryCommand.StandbyCache }), "高压力快捷入口只执行待机缓存，不裁剪或刷盘");
+        memory.Calls.Clear(); memory.Available = 12UL << 30;
         var buttons = new[] { "RepositoryLinkButton", "BlogLinkButton", "AuthorLinkButton" }.Select(name => (Button)window.FindName(name)).ToArray();
         foreach (var button in buttons) button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert(openedLinks.Select(uri => uri.AbsoluteUri).SequenceEqual(new[] { "https://github.com/ice11123/Click-Clean", "https://ice11123.github.io/blog_test2/", "https://github.com/ice11123" }), "三个链接按钮分别打开准确的仓库、博客和作者首页（模拟打开器）");
@@ -54,7 +75,8 @@ public static class Program
             var label = (TextBlock)liveDock.FindName("StatusLabel");
             liveDock.PreviewReveal(true);
             Assert(window.SamplingSeconds == 1 && label.Text.StartsWith("内存 ", StringComparison.Ordinal), "浮出即刷新内存，实时采样间隔为一秒");
-            ((Button)window.FindName("CleanButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            foreach (var name in new[] { "WorkingCheck", "ModifiedCheck", "StandbyCheck" }) ((CheckBox)window.FindName(name)).IsChecked = true;
+            ((Button)window.FindName("CustomButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             for (var step = 1; step <= 3; step++) {
                 var deadline = Stopwatch.StartNew();
                 while (!label.Text.StartsWith(step + "/3 ", StringComparison.Ordinal) && deadline.Elapsed.TotalSeconds < 2) await Task.Delay(10);
@@ -71,23 +93,59 @@ public static class Program
         await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         foreach (var theme in new[] { "light", "dark" })
         {
+            var priorDownloads = update.Downloads; var priorApplies = update.Applies;
             store.Settings.Theme = theme; window.ApplyTheme(); window.CloseOverlay();
             ((ScrollViewer)window.FindName("MainContent")).ScrollToTop();
             await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             Assert(window.NativeThemeApplied, "原生标题栏成功应用主题属性：" + theme);
-            Assert(((SolidColorBrush)Application.Current.Resources["AccentText"]).Color.ToString() == (theme == "light" ? "#FFFFFFFF" : "#FF101A2F"), "主题强调文字使用对应前景色：" + theme);
-            foreach (var pair in new[] { ("Text", "Surface"), ("Muted", "Surface"), ("AccentText", "Accent") }) {
+            Assert(((SolidColorBrush)Application.Current.Resources["AccentText"]).Color.ToString() == "#FFFFFFFF", "主题强调按钮使用白色文字：" + theme);
+            foreach (var pair in new[] { ("Text", "Surface"), ("Text", "Bg"), ("Muted", "Surface"), ("Muted", "Bg"), ("DetailAccent", "Bg"), ("AccentText", "Accent") }) {
                 var foreground = ((SolidColorBrush)Application.Current.Resources[pair.Item1]).Color;
                 var background = ((SolidColorBrush)Application.Current.Resources[pair.Item2]).Color;
                 Assert(Contrast(foreground, background) >= 4.5, "主题基础文本色对比度不少于4.5：" + theme + "/" + pair.Item1);
             }
             window.PreviewDockIdle(before); window.RenderTo(Path.Combine(output, theme + "-main.png"));
             var scroller = (ScrollViewer)window.FindName("MainContent");
+            var options = (Expander)window.FindName("Options");
+            var primaryAction = (Button)window.FindName("CleanButton");
+            Assert(primaryAction.ActualHeight >= 32 && primaryAction.ActualHeight <= 40 && primaryAction.ActualWidth < scroller.ActualWidth * 0.6,
+                "首页主动作采用正常控件尺寸，不再是通栏宣传按钮：" + theme);
+            Assert(!options.IsExpanded && scroller.ScrollableHeight < 1, "默认首页与最近结果无需滚动：" + theme);
+            var foldToggle = options.Template.FindName("HeaderSite", options) as System.Windows.Controls.Primitives.ToggleButton;
+            Assert(foldToggle is not null && foldToggle.Focusable && foldToggle.IsChecked == false, "平面折叠控件保留可聚焦的切换入口：" + theme);
+            foldToggle!.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            Assert(options.IsExpanded, "折叠标题与展开状态双向同步：" + theme);
             scroller.ScrollToBottom(); await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             Assert(scroller.VerticalOffset > 0 && Descendants(scroller).OfType<System.Windows.Controls.Primitives.ScrollBar>().Any(bar => bar.Orientation == Orientation.Vertical && bar.Width == 10), "主题滚动条存在，主体能够滚动到底部：" + theme);
-            scroller.ScrollToTop(); await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            options.IsExpanded = false; scroller.ScrollToTop(); await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            update.Set(UpdatePhase.Available, "预览：发现新版本 · 由你决定是否更新");
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            Assert(scroller.ScrollableHeight < 1, "默认首页更新提示与最近结果同屏无需滚动：" + theme);
+            Assert(((Border)window.FindName("HomeUpdateBanner")).IsVisible && update.Downloads == priorDownloads && update.Applies == priorApplies, "新版本首页醒目提示但未自动操作：" + theme);
+            window.RenderTo(Path.Combine(output, theme + "-update-found.png"));
+            ((Button)window.FindName("HomeUpdateButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert(!((Button)window.FindName("HomeUpdateButton")).IsEnabled, "下载期间首页更新按钮禁止重复点击：" + theme);
+            await Task.Delay(60);
+            Assert(update.Ready && update.Applies == priorApplies && update.Downloads == priorDownloads + 1 && ((Button)window.FindName("HomeUpdateButton")).Content as string == "重启并更新", "下载就绪不自动应用，需第二次手动确认：" + theme);
+            window.RenderTo(Path.Combine(output, theme + "-update-ready.png"));
+            ((Button)window.FindName("HomeUpdateButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert(update.Applies == priorApplies + 1, "仅用户点击才调用应用更新：" + theme);
+            update.Set(UpdatePhase.Failed, "预览：连接失败，旧版本保留");
+            Assert(((Border)window.FindName("HomeUpdateBanner")).IsVisible && ((Button)window.FindName("HomeUpdateButton")).Content as string == "重试检查", "检查失败首页可重试：" + theme);
+            update.Set(UpdatePhase.Current, "预览：当前已是最新版本");
             window.SetDockOperation("刷新修改页…"); window.RenderTo(Path.Combine(output, theme + "-running.png"));
-            if (window.DesktopIsland is { } mini) { mini.PreviewReveal(true); mini.UpdateLayout(); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); }
+            if (window.DesktopIsland is { } mini) {
+                mini.IsWorking = true; mini.PreviewReveal(true); mini.UpdateLayout();
+                var miniButton = (Button)mini.FindName("CleanButton");
+                var shell = (Border)miniButton.Template.FindName("Shell", miniButton);
+                Assert(((SolidColorBrush)shell.Background).Color == ((SolidColorBrush)Application.Current.Resources["IslandBg"]).Color &&
+                    ((TextBlock)mini.FindName("StatusLabel")).Foreground is SolidColorBrush foreground && foreground.Color == ((SolidColorBrush)Application.Current.Resources["IslandText"]).Color,
+                    "岛背景与文字使用当前应用主题资源：" + theme);
+                var baseColor = ((SolidColorBrush)shell.Background).Color.ToString();
+                Assert(baseColor == (theme == "light" ? "#FFFEF8F3" : "#FF000000"), "岛背景随浅深色主题切换：" + theme);
+                await Task.Delay(120); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); mini.IsWorking = false;
+            }
             foreach (var section in new[] { "appearance", "automation", "updates", "about" })
             {
                 window.OpenSettings(); window.ShowSettingsSection(section);
@@ -96,6 +154,14 @@ public static class Program
                 Assert(Descendants((FrameworkElement)window.FindName(panelName)).OfType<TextBlock>().Where(text => text.FontSize >= 17).All(text => ((SolidColorBrush)text.Foreground).Color == ((SolidColorBrush)Application.Current.Resources["Text"]).Color), "设置区大标题实际前景色跟随主题：" + theme + "/" + section);
                 var selectedTab = Descendants((DependencyObject)window.FindName("SettingsPanel")).OfType<Button>().First(button => button.Tag as string == section);
                 Assert(((SolidColorBrush)selectedTab.Background).Color == ((SolidColorBrush)Application.Current.Resources["Tint"]).Color, "设置分段导航选中状态正确：" + theme + "/" + section);
+                Assert(Contrast(((SolidColorBrush)selectedTab.Foreground).Color, ((SolidColorBrush)selectedTab.Background).Color) >= 4.5, "设置导航选中文字对比度不少于4.5：" + theme + "/" + section);
+                if (section == "automation") {
+                    var thresholdToggle = (CheckBox)window.FindName("ThresholdCheck");
+                    var timerToggle = (CheckBox)window.FindName("TimerCheck");
+                    Assert(((TextBox)window.FindName("ThresholdInput")).IsEnabled == (thresholdToggle.IsChecked == true) &&
+                        ((TextBox)window.FindName("SustainInput")).IsEnabled == (thresholdToggle.IsChecked == true) &&
+                        ((TextBox)window.FindName("IntervalInput")).IsEnabled == (timerToggle.IsChecked == true), "关闭自动策略时对应输入显示为停用：" + theme);
+                }
                 foreach (var scale in new[] { 1d, 1.25, 1.5, 1.75, 2d }) window.RenderTo(Path.Combine(output, $"{theme}-{section}-{scale * 100:0}.png"), scale);
             }
             window.OpenHistory(); window.RenderTo(Path.Combine(output, theme + "-history.png"));
