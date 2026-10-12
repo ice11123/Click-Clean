@@ -27,7 +27,8 @@ $signParams = ''
 if ($SigningThumbprint) {
     if ($SigningThumbprint -notmatch '^[0-9a-fA-F]{40}$') { throw '签名证书指纹必须为40位十六进制字符。' }
     $signingCertificate = Get-Item -LiteralPath ('Cert:\CurrentUser\My\' + $SigningThumbprint)
-    if (-not $signingCertificate.HasPrivateKey -or $signingCertificate.NotAfter -lt (Get-Date) -or $signingCertificate.EnhancedKeyUsageList.ObjectId.Value -notcontains '1.3.6.1.5.5.7.3.3') { throw '需要有效且包含私钥的代码签名证书。' }
+    $usageOids = @($signingCertificate.Extensions | Where-Object { $_ -is [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] } | ForEach-Object { foreach ($oid in $_.EnhancedKeyUsages) { $oid.Value } })
+    if (-not $signingCertificate.HasPrivateKey -or $signingCertificate.NotAfter -lt (Get-Date) -or $usageOids -notcontains '1.3.6.1.5.5.7.3.3') { throw '需要有效且包含私钥的代码签名证书。' }
     if (-not $SignToolPath -or -not (Test-Path -LiteralPath $SignToolPath)) { throw '签名构建需提供 Windows SDK SignTool.exe 的真实路径。' }
     $timestampUri = $null
     if (-not [Uri]::TryCreate($TimestampUrl, [UriKind]::Absolute, [ref]$timestampUri) -or $timestampUri.Scheme -ne 'https' -or $TimestampUrl -match '[\s"`]' ) { throw '需提供证书服务商的 HTTPS 时间戳地址。' }
