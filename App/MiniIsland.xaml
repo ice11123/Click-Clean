@@ -20,7 +20,7 @@
           <Ellipse.OpacityMask><RadialGradientBrush><GradientStop Color="White" Offset="0"/><GradientStop Color="#00FFFFFF" Offset="1"/></RadialGradientBrush></Ellipse.OpacityMask>
         </Ellipse>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-        <Ellipse x:Name="Dot" Width="5" Height="5" Fill="#83ADF9" Margin="0,0,9,0" VerticalAlignment="Center"/>
+        <Ellipse x:Name="Dot" Width="6" Height="6" Fill="#83ADF9" Margin="0,0,9,0" VerticalAlignment="Center"/>
         <TextBlock x:Name="StatusLabel" Text="内存 —" Foreground="{DynamicResource IslandText}" FontSize="12" FontWeight="Medium" Width="126" TextAlignment="Center" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular"/>
         </StackPanel>
       </Grid>

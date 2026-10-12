@@ -1,726 +1,288 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows.Input;
-using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using ClickClean.ViewModels;
 
 namespace ClickClean;
 
 public partial class MainWindow : Window
 {
     private readonly Store store;
-    private readonly MemoryEngine engine;
+    private readonly bool preview, simulatedUpdates;
     private readonly IMemoryApi memory;
-    private readonly bool preview;
-    private readonly DispatcherTimer timer;
-    private readonly AutomationPolicy automation = new();
     private readonly IApplicationUpdates updates;
-    private readonly bool simulatedUpdates;
     private readonly Action<Uri> projectLinkOpener;
-    private readonly IAutomationEnvironmentReader? environmentReader;
-    private readonly IProcessMemoryReader processReader;
-    private readonly ProcessGrowthTracker growthTracker = new();
-    private AutomationEnvironment environmentState = new();
-    private double lastEnvironmentRead = -10, lastGrowthRead = -10;
-    private int growthGeneration;
-    private bool growthReading, growthActive, memoryReadFailed;
-    private DateTimeOffset growthStarted;
-    private CancellationTokenSource? longObservation;
-    private CleanupResult? latestResult;
+    private readonly AutomationPolicy automation = new();
+    private readonly CleanupCoordinator cleanup;
+    private readonly SamplingCoordinator sampler;
+    private readonly ProcessObservation processes;
     private readonly UpdateRecovery recovery;
-    private readonly Stopwatch uptime = Stopwatch.StartNew(), operationClock = new();
-    private CancellationTokenSource? cancellation;
+    private readonly DockStatus dockStatus = new();
     private System.Windows.Forms.NotifyIcon? tray;
     private MiniIsland? mini;
-    private bool exiting, loadingSettings, exitRequested, lastInputWasPointer, tickRunning, applying, activeAutomatic, observingMemory;
-    private IInputElement? overlayReturnFocus;
-    private double overlayReturnOffset;
-    private string currentStep = "";
-    private readonly DockStatus dockStatus = new();
-    private double nextUpdateCheck = 6 * 3600;
-    private double lastThemeCheck = -30;
-    public bool IsBusy => cancellation is not null || engine.IsRunning;
+    private bool applying, disposed, exitRequested, loadingSettings, pointerInput;
+    private string settingsReturn = "index", popupPage = "";
+    private IInputElement? popupReturnFocus;
+    public ShellState Presentation { get; }
+    public bool IsBusy => cleanup.Busy;
     public bool TrayVisible => tray?.Visible == true;
-    public double SamplingSeconds => timer.Interval.TotalSeconds;
-    public bool MotionEnabled => !store.Settings.ReduceMotion && SystemParameters.ClientAreaAnimation;
+    public double SamplingSeconds => sampler.Seconds;
+    public bool MotionEnabled => !store.Settings.ReduceMotion && SystemParameters.ClientAreaAnimation && !SystemParameters.HighContrast;
     public MiniIsland? DesktopIsland => mini;
     public bool NativeThemeApplied { get; private set; }
+    public Func<MessageBoxResult>? DraftDecisionOverride { get; set; }
 
-    public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null, Action<Uri>? projectLinkOpener = null, IApplicationUpdates? updateOverride = null,
+    public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null,
+        Action<Uri>? projectLinkOpener = null, IApplicationUpdates? updateOverride = null,
         IAutomationEnvironmentReader? environmentOverride = null, IProcessMemoryReader? processOverride = null)
     {
         this.store = store; preview = verification;
         this.projectLinkOpener = projectLinkOpener ?? (uri => OpenExternal(uri.AbsoluteUri));
         updates = updateOverride ?? new UpdateService(Path.Combine(store.Root, "update-state.json"));
-        simulatedUpdates = verification && updateOverride is not null;
-        memory = memoryApi ?? (verification ? new PreviewMemoryApi() : new WindowsMemoryApi());
-        environmentReader = environmentOverride ?? (verification ? null : new AutomationEnvironmentReader());
-        processReader = processOverride ?? new ProcessMemoryReader();
+        simulatedUpdates = preview && updateOverride is not null;
+        memory = memoryApi ?? (preview ? new PreviewMemoryApi() : new WindowsMemoryApi());
         recovery = new UpdateRecovery(store.Root);
-        engine = new MemoryEngine(memory);
-        InitializeComponent(); ApplyTheme();
-        SourceInitialized += (_, _) => ApplyTheme();
-        VersionText.Text = $"Windows 11 · x64 · {BuildInfo.Version}";
-        AboutVersion.Text = $"版本 {BuildInfo.Version} · {BuildInfo.Commit}";
-        AdminText.Text = preview ? "交互预览 · 模拟数据" : "管理员已就绪";
+        cleanup = new(store, memory, automation, Dispatcher, preview);
+        sampler = new(store, memory, cleanup, automation, updates, environmentOverride ?? (preview ? null : new AutomationEnvironmentReader()), preview, () => applying);
+        processes = new(processOverride ?? new ProcessMemoryReader()); processes.Initialize();
+        Presentation = new(new UiCommand(DispatchAction)) { Preview = preview };
+        InitializeComponent(); DataContext = Presentation;
         Title = preview ? "Click-Clean 即清 · 交互预览" : "Click-Clean 即清";
-        timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(trayMode ? 10 : 1) };
-        timer.Tick += async (_, _) => await Tick();
-        IsVisibleChanged += (_, _) => SetSampling();
-        PreviewMouseDown += AnimatePress; PreviewMouseUp += AnimateRelease;
-        LostMouseCapture += (_, _) => AnimateRelease(this, null!);
-        PreviewKeyDown += (_, e) => {
-            lastInputWasPointer = false;
-            if (e.Key == Key.Escape && Overlay.Visibility == Visibility.Visible) { CloseOverlay(); e.Handled = true; }
+        SourceInitialized += (_, _) => ApplyTheme();
+        PreviewMouseDown += (_, _) => pointerInput = true;
+        PreviewKeyDown += (_, e) => { pointerInput = false; if (e.Key == Key.Escape && DetailsPopup.IsOpen) { ClosePopup(); e.Handled = true; } };
+        PopupFrame.PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { ClosePopup(); e.Handled = true; } };
+        DetailsPopup.Closed += (_, _) => {
+            if (Presentation.Page == popupPage && popupReturnFocus is UIElement target && target.IsVisible && target.IsEnabled) target.Focus();
+        };
+        DetailsPopup.Opened += (_, _) => {
+            PopupFrame.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+            var animate = pointerInput && MotionEnabled;
+            PopupShift.Y = animate ? 6 : 0;
+            IslandMotion.To(PopupShift, TranslateTransform.YProperty, 0, 180, animate);
+            PopupFrame.Opacity = animate ? 0.8 : 1;
+            IslandMotion.Opacity(PopupFrame, 1, 180, animate);
         };
         Closing += OnClosing;
+        IsVisibleChanged += (_, _) => SetSampling();
         StateChanged += (_, _) => SetSampling();
+        SizeChanged += (_, _) => LayoutRoot.Margin = new(ActualWidth < 480 ? 16 : 24, 8, ActualWidth < 480 ? 16 : 24, 14);
+        SystemParameters.StaticPropertyChanged += SystemPreferenceChanged;
         WorkingCheck.IsChecked = store.Settings.SelectedSteps.Contains(MemoryCommand.WorkingSets);
         ModifiedCheck.IsChecked = store.Settings.SelectedSteps.Contains(MemoryCommand.ModifiedPages);
         StandbyCheck.IsChecked = store.Settings.SelectedSteps.Contains(MemoryCommand.StandbyCache);
+        LoadPreferences();
+        Presentation.Settings.PropertyChanged += PreferenceChanged;
         var recent = store.Settings.LastCleanupUtc is { } last && DateTimeOffset.UtcNow - last < TimeSpan.FromMinutes(store.Settings.Automation.CooldownMinutes);
         automation.Configure(store.Settings.Automation, recent);
+        cleanup.Changed += CleanupChanged;
+        cleanup.DockOperation += SetDockOperation;
+        cleanup.DockResult += text => { dockStatus.SetResult(text); mini?.RefreshStatus(); };
+        cleanup.ResultAvailable += ShowResult;
+        sampler.MemoryChanged += MemoryChanged;
+        sampler.ThemePoll += () => ApplyTheme();
+        sampler.AutomaticChanged += RefreshAutomationSummary;
+        processes.Changed += ProcessesChanged;
+        processes.Failed += text => Presentation.ProcessFeedback = text;
         updates.Changed += UpdateChanged;
-        Loaded += async (_, _) => { if (store.Settings.CheckUpdates && (!preview || simulatedUpdates)) await CheckUpdates(); };
-        Loaded += (_, _) => {
-            if (!preview) {
-                RecoveryBanner.Visibility = recovery.HasIncompleteUpdate ? Visibility.Visible : Visibility.Collapsed;
-                Dispatcher.BeginInvoke(() => recovery.MarkHealthy(BuildInfo.Version), DispatcherPriority.ApplicationIdle);
-            }
+        Loaded += async (_, _) => {
+            FitWorkArea(); ApplyTheme();
+            if (!preview) { Presentation.RecoveryVisible = recovery.HasIncompleteUpdate; _ = Dispatcher.BeginInvoke(() => recovery.MarkHealthy(BuildInfo.Version), DispatcherPriority.ApplicationIdle); }
+            if (store.Settings.CheckUpdates && (!preview || simulatedUpdates)) await CheckUpdates();
         };
-        if (!preview)
-        {
-            var menu = new System.Windows.Forms.ContextMenuStrip();
-            menu.Items.Add("打开 Click-Clean 即清", null, (_, _) => Dispatcher.BeginInvoke(ShowMain));
-            menu.Items.Add("一键整理", null, (_, _) => Dispatcher.BeginInvoke(async () => await RoutineCleanup()));
-            menu.Items.Add("显示 / 收起桌面岛", null, (_, _) => Dispatcher.BeginInvoke(ToggleIsland));
-            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-            menu.Items.Add("退出", null, (_, _) => Dispatcher.BeginInvoke(TryExit));
-            var icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application;
-            tray = new() { Icon = icon, Text = "Click-Clean 即清", ContextMenuStrip = menu, Visible = true };
-            tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMain);
-            TryRefreshStartup();
-        }
-        if (store.History.FirstOrDefault() is { } recentResult) ShowResult(recentResult, false, true);
-        RefreshMemory(); RefreshAutomationSummary();
+        if (!preview) CreateTray();
+        RefreshHistory();
+        if (store.History.FirstOrDefault() is { } result) ShowResult(result, false);
+        sampler.Read(); RefreshAutomationSummary(); ApplyTheme();
         if (store.Settings.MiniIsland) ShowIsland();
-        timer.Start();
+        sampler.SetVisible(!trayMode, false); sampler.Start(); UpdateChanged();
     }
 
-    private async Task Tick()
+    private async Task DispatchAction(object? action)
     {
-        if (tickRunning || exiting || applying) return;
-        tickRunning = true;
-        try
-        {
-            if (uptime.Elapsed.TotalSeconds - lastThemeCheck >= 30) { ApplyTheme(); lastThemeCheck = uptime.Elapsed.TotalSeconds; }
-            var snapshot = RefreshMemory();
-            if (growthActive && !growthReading && IsVisible && uptime.Elapsed.TotalSeconds - lastGrowthRead >= 5) _ = RefreshGrowth();
-            if (IsBusy && operationClock.Elapsed.TotalSeconds >= 60)
-            {
-                StatusText.Text = $"{currentStep}耗时较长，仍在等待系统返回；可取消后续步骤。";
-                SetDockOperation("等待 · " + currentStep);
+        if (disposed) return;
+        try {
+            if (action is ResultRow row) { Presentation.Detail = row; OpenPopup("result", Keyboard.FocusedElement as FrameworkElement); return; }
+            if (action is ProcessRow process) { Presentation.ProcessDetail = process.Description; OpenPopup("process", Keyboard.FocusedElement as FrameworkElement); return; }
+            switch (action as string) {
+                case "overview": Navigate("overview"); break;
+                case "history": OpenHistory(); break;
+                case "diagnostics": Navigate("diagnostics"); break;
+                case "settings": OpenSettings(); break;
+                case "settings-appearance": OpenSettingsSection("appearance", "index"); break;
+                case "settings-automation": OpenSettingsSection("automation", "index"); break;
+                case "settings-updates": OpenSettingsSection("updates", "index"); break;
+                case "settings-about": OpenSettingsSection("about", "index"); break;
+                case "automation-shortcut": OpenSettingsSection("automation", "overview"); break;
+                case "settings-back": if (settingsReturn == "overview") Navigate("overview"); else OpenSettings(); break;
+                case "clean": await RoutineCleanup(); break;
+                case "cancel-clean": cleanup.Cancel(); break;
+                case "memory-details": OpenPopup("memory", OverviewPane.MemoryDetailsButton); break;
+                case "custom": OpenPopup("custom", OverviewPane.CustomButton); break;
+                case "selection": store.Settings.SelectedSteps = Selected(); SaveSettings(); break;
+                case "custom-run": await CustomCleanup(); break;
+                case "recent-details": if (Presentation.Recent is { } value) { Presentation.Detail = value; OpenPopup("result", OverviewPane.RecentDetailsButton); } break;
+                case "close-popup": ClosePopup(); break;
+                case "copy-result": if (Presentation.Detail is { } detail) Clipboard.SetText(detail.Details); break;
+                case "refresh-processes": await processes.Read(); break;
+                case "save-automation": SaveAutomation(); break;
+                case "check-update": await CheckUpdates(); break;
+                case "download-update": if (!applying && (!preview || simulatedUpdates)) await updates.DownloadAsync(); break;
+                case "cancel-update": updates.Cancel(); break;
+                case "apply-update": await ApplyUpdate(); break;
+                case "home-update":
+                    if (updates.Ready) await ApplyUpdate();
+                    else if (updates.Available && (!preview || simulatedUpdates)) await updates.DownloadAsync();
+                    else await CheckUpdates();
+                    break;
+                case "repository": case "blog": case "author":
+                    var uri = ProjectLinks.Resolve(action as string, BuildInfo.Repository);
+                    if (uri is null) Presentation.Settings.Feedback = "链接配置无效。"; else projectLinkOpener(uri);
+                    break;
+                case "releases": OpenExternal(BuildInfo.Repository.TrimEnd('/') + "/releases"); break;
+                case "license":
+                    var file = Path.Combine(AppContext.BaseDirectory, "LICENSE");
+                    if (File.Exists(file)) OpenExternal(file); else Presentation.Settings.Feedback = "完整许可证见正式包的 LICENSE 文件。";
+                    break;
+                case "clear-history": ClearHistory(); break;
+                case "export": ExportLog(); break;
+                case "delete-data": DeleteData(); break;
+                case "exit": TryExit(); break;
             }
-            if (!preview)
-            {
-                var enabled = store.Settings.Automation.ThresholdEnabled || store.Settings.Automation.TimerEnabled;
-                if (enabled && !store.Settings.AutomationNeedsConfirmation && environmentReader is not null && uptime.Elapsed.TotalSeconds - lastEnvironmentRead >= 5)
-                {
-                    lastEnvironmentRead = uptime.Elapsed.TotalSeconds;
-                    try { environmentState = await Task.Run(environmentReader.Read); }
-                    catch (Exception ex) { environmentState = new(DiskBusy: null); store.Log("自动避让读数失败：" + ex.Message); }
-                    if (exiting || applying) return;
-                }
-                var trigger = automation.Evaluate(snapshot?.Load, IsBusy || applying || updates.Busy || store.Settings.AutomationNeedsConfirmation, environmentState);
-                if (trigger is not null)
-                    _ = RoutineCleanup(trigger, true);
-                if (store.Settings.CheckUpdates && uptime.Elapsed.TotalSeconds >= nextUpdateCheck)
-                {
-                    nextUpdateCheck = uptime.Elapsed.TotalSeconds + 6 * 3600;
-                    _ = CheckUpdates();
-                }
-            }
-            RefreshAutomationSummary();
         }
-        finally { tickRunning = false; }
+        catch (Exception ex) { store.Log(ex.ToString()); Presentation.Settings.Feedback = "操作未完成：" + ex.Message; if (Presentation.Overview) Presentation.Operation = "操作未完成：" + ex.Message; }
     }
-    public void ShowMain() { Show(); WindowState = WindowState.Normal; Activate(); }
-    private MemorySnapshot? RefreshMemory()
-    {
-        try
-        {
-            var snapshot = memory.Read();
-            if (snapshot.Total == 0 || snapshot.Total > long.MaxValue || snapshot.Available > snapshot.Total || snapshot.Commit > long.MaxValue)
-                throw new InvalidDataException("系统内存读数无效。");
-            dockStatus.SetMemory(snapshot); mini?.RefreshStatus();
-            LoadText.Text = snapshot.Load.ToString("0"); MemoryBar.Value = snapshot.Load;
-            MemoryBar.Opacity = 1;
-            UsedText.Text = Labels.Bytes(snapshot.Used); AvailableText.Text = Labels.Bytes(snapshot.Available);
-            TotalText.Text = Labels.Bytes(snapshot.Total); CommitText.Text = $"{Labels.Bytes(snapshot.Commit)} / {Labels.Bytes(snapshot.CommitLimit)}";
-            if (tray is not null) tray.Text = $"Click-Clean · {snapshot.Load:0}% · 可用 {Labels.Bytes(snapshot.Available)}";
-            if (memoryReadFailed && !IsBusy) StatusText.Text = "实时内存读数已恢复。";
-            memoryReadFailed = false;
-            return snapshot;
-        }
-        catch (Exception ex) {
-            dockStatus.SetMemory(null); mini?.RefreshStatus();
-            LoadText.Text = UsedText.Text = AvailableText.Text = TotalText.Text = CommitText.Text = "—";
-            MemoryBar.Value = 0; MemoryBar.Opacity = 0.35;
-            if (tray is not null) tray.Text = "Click-Clean · 内存读数暂不可用";
-            if (!IsBusy) StatusText.Text = "内存读数暂不可用：" + ex.Message;
-            if (!memoryReadFailed) store.Log(ex.ToString()); memoryReadFailed = true; return null;
-        }
-    }
-    public void ApplyTheme(string? overrideTheme = null)
-    {
-        var theme = overrideTheme ?? store.Settings.Theme; var dark = theme == "dark";
-        if (theme == "system")
-        {
-            using var key = Registry.CurrentUser.OpenSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
-            dark = key?.GetValue("AppsUseLightTheme") is int value && value == 0;
-        }
-        if (SystemParameters.HighContrast)
-        {
-            SetBrush("Bg", SystemColors.WindowColor); SetBrush("Surface", SystemColors.WindowColor);
-            SetBrush("Text", SystemColors.WindowTextColor); SetBrush("Muted", SystemColors.WindowTextColor);
-            SetBrush("Line", SystemColors.WindowTextColor); SetBrush("Accent", SystemColors.HighlightColor); SetBrush("AccentText", SystemColors.HighlightTextColor);
-            SetBrush("Tint", SystemColors.ControlColor); SetBrush("DetailAccent", SystemColors.WindowTextColor);
-            SetBrush("IslandBg", SystemColors.WindowColor); SetBrush("IslandText", SystemColors.WindowTextColor); SetBrush("IslandMuted", SystemColors.WindowTextColor);
-            SetBrush("IslandBorder", SystemColors.WindowTextColor); SetBrush("IslandHoverBorder", SystemColors.HighlightColor); SetBrush("IslandGlow", SystemColors.HighlightColor);
-            if (mini is not null) mini.MotionAllowed = MotionEnabled;
-            NativeThemeApplied = WindowTheme.Apply(this, false, true, SystemColors.WindowColor, SystemColors.WindowTextColor); return;
-        }
-        SetBrush("Bg", dark ? "#000000" : "#F5F2EC"); SetBrush("Surface", dark ? "#0D0D0D" : "#FFFFFF");
-        SetBrush("Text", dark ? "#FFFFFF" : "#16243C"); SetBrush("Muted", dark ? "#B8B8B8" : "#53647A");
-        SetBrush("Line", dark ? "#343030" : "#E0DAD2"); SetBrush("Accent", dark ? "#B74454" : "#A62E3A");
-        SetBrush("AccentText", "#FFFFFF"); SetBrush("Tint", dark ? "#2A1117" : "#F6E8EA");
-        SetBrush("DetailAccent", dark ? "#FFFFFF" : "#96641F");
-        SetBrush("IslandBg", dark ? "#000000" : "#FEF8F3"); SetBrush("IslandText", dark ? "#FFFFFF" : "#16243C"); SetBrush("IslandMuted", dark ? "#B8B8B8" : "#53647A");
-        SetBrush("IslandBorder", dark ? "#55202A" : "#D8B784"); SetBrush("IslandHoverBorder", dark ? "#B74454" : "#A62E3A"); SetBrush("IslandGlow", dark ? "#74212F" : "#E9BE6C");
-        if (mini is not null) mini.MotionAllowed = MotionEnabled;
-        NativeThemeApplied = WindowTheme.Apply(this, dark, false, ((SolidColorBrush)Application.Current.Resources["Bg"]).Color, ((SolidColorBrush)Application.Current.Resources["Text"]).Color);
-    }
-    private static void SetBrush(string key, string color) => SetBrush(key, (Color)ColorConverter.ConvertFromString(color));
-    private static void SetBrush(string key, Color color)
-    {
-        if (Application.Current.Resources[key] is SolidColorBrush brush && brush.Color == color) return;
-        Application.Current.Resources[key] = new SolidColorBrush(color);
-    }
-    private async void Clean_Click(object sender, RoutedEventArgs e) => await RoutineCleanup();
+
     private async Task RoutineCleanup(string trigger = "手动", bool automatic = false)
     {
+        if (IsBusy || applying || disposed) return;
+        var environment = sampler.Environment;
+        if (automatic) { if (preview) environment = await sampler.ReadEnvironment(); else environment = environment with { Fullscreen = ForegroundActivity.IsFullscreen() }; }
+        if (!IsBusy && !applying && !disposed) await cleanup.RunRoutineAsync(trigger, automatic, environment);
+    }
+    private MemoryCommand[] Selected() => new[] { (WorkingCheck, MemoryCommand.WorkingSets), (ModifiedCheck, MemoryCommand.ModifiedPages), (StandbyCheck, MemoryCommand.StandbyCache) }.Where(x => x.Item1.IsChecked == true).Select(x => x.Item2).ToArray();
+    private async Task CustomCleanup()
+    {
         if (IsBusy || applying) return;
-        if (automatic && store.Settings.AutomationNeedsConfirmation) return;
-        if (automatic)
-        {
-            if (preview && environmentReader is not null) environmentState = await Task.Run(environmentReader.Read);
-            environmentState = environmentState with { Fullscreen = preview ? environmentState.Fullscreen : ForegroundActivity.IsFullscreen() };
-            if (IsBusy || applying || exiting) return;
-            var a = store.Settings.Automation;
-            var deferred = a.PauseFullscreen && environmentState.Fullscreen ? "全屏应用正在使用" :
-                a.PauseDiskBusy && environmentState.DiskBusy != false ? "磁盘繁忙或状态暂不可用" : null;
-            if (deferred is not null) { automation.DeferAttempt(trigger.Contains("定时", StringComparison.Ordinal), deferred); RefreshAutomationSummary(); return; }
-        }
-        MemorySnapshot? snapshot = null;
-        try { snapshot = memory.Read(); } catch (Exception ex) { store.Log("压力检查失败：" + ex.Message); }
-        var systemMode = store.Settings.Automation.TriggerMode == AutomaticTriggerMode.SystemPressure;
-        var plan = automatic && systemMode && environmentState.LowMemory != true
-            ? new RoutineCleanupPlan([], "系统未报告低内存，未执行自动整理。")
-            : RoutineCleanupPolicy.Evaluate(snapshot, store.Settings.Automation.ThresholdPercent, automatic && !systemMode);
-        StatusText.Text = plan.Message;
-        if (plan.Skipped)
-        {
-            dockStatus.SetResult(snapshot is null ? "状态未知 · 未整理" : "无需整理"); mini?.RefreshStatus();
-            if (automatic) automation.RecordSkipped();
-            return;
-        }
-        await Cleanup(plan.Commands, trigger, automatic);
-    }
-    private MemoryCommand[] Selected() => new[] { (WorkingCheck, MemoryCommand.WorkingSets), (ModifiedCheck, MemoryCommand.ModifiedPages), (StandbyCheck, MemoryCommand.StandbyCache) }
-        .Where(p => p.Item1.IsChecked == true).Select(p => p.Item2).ToArray();
-    private void Selection_Click(object sender, RoutedEventArgs e)
-    {
-        store.Settings.SelectedSteps = Selected(); SaveSettings();
-        if (Selected().Length == 0) StatusText.Text = "高级手动项目未选择；不会自动补选三步。";
-    }
-    private async void Custom_Click(object sender, RoutedEventArgs e)
-    {
         var selected = Selected();
-        if (selected.Length == 0) { StatusText.Text = "请至少选择一个整理项目。"; return; }
-        if (!preview && selected.Any(command => command is MemoryCommand.WorkingSets or MemoryCommand.ModifiedPages) &&
-            MessageBox.Show(this, "所选步骤会干预全系统驻留页或写回修改页，可能导致重新加载、短暂卡顿和磁盘忙碌。它不释放应用的全部分配，也不保证提速。仍要执行？", "高级手动整理", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        await Cleanup(selected);
+        if (selected.Length == 0) { Presentation.Operation = "请至少选择一个整理项目。"; return; }
+        if (!preview && selected.Any(c => c is MemoryCommand.WorkingSets or MemoryCommand.ModifiedPages) &&
+            MessageBox.Show(this, "所选步骤作用于全系统，可能导致重新加载、短暂卡顿和磁盘忙碌。仍要执行？", "自定义整理", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        ClosePopup(); await cleanup.RunAsync(selected);
     }
-    private async Task Cleanup(IEnumerable<MemoryCommand> commands, string trigger = "手动", bool automatic = false)
+    private void CleanupChanged()
     {
-        if (IsBusy || applying) { StatusText.Text = "当前操作尚未结束，请稍等。"; return; }
-        var selected = commands.Distinct().OrderBy(c => (int)c).ToArray();
-        StopLongObservation("新整理已开始，旧持续观测停止。");
-        cancellation = new();
-        activeAutomatic = automatic;
-        CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = false;
-        if (mini is not null) { mini.CleanButton.IsEnabled = false; mini.IsWorking = true; }
-        CancelButton.Visibility = Visibility.Visible; CancelButton.IsEnabled = true;
-        CleanButton.Content = "正在整理…"; StatusText.Text = preview ? "正在演示整理过程，不调用系统整理接口。" : "正在准备权限…";
-        SetDockOperation("准备整理…");
-        operationClock.Restart(); UpdateChanged();
-        var success = false;
-        var operationExecuted = false;
-        try
-        {
-            var result = await engine.RunAsync(selected, command => Dispatcher.Invoke(() => {
-                operationExecuted = true;
-                currentStep = Labels.Name(command); StatusText.Text = "正在" + currentStep + "…";
-                SetDockOperation($"{Array.IndexOf(selected, command) + 1}/{selected.Length} {currentStep}");
-            }), cancellation.Token, preview ? TimeSpan.FromMilliseconds(20) : TimeSpan.FromSeconds(3), () => Dispatcher.Invoke(() => {
-                observingMemory = true; CancelButton.Content = "结束复测";
-                currentStep = "复测内存状态"; StatusText.Text = "系统调用已返回，正在复测；观测变化不等于提速。";
-                SetDockOperation("复测内存…");
-            }));
-            result = result with { Trigger = preview ? "预览（模拟）" : trigger };
-            success = result.Success; ShowResult(result);
-            StatusText.Text = result.Success ? result.ObservationError ?? "步骤已完成；前后变化含系统其他活动，不证明性能提升。" : result.Error ?? "已取消尚未开始的步骤。";
-            try { store.Add(result); } catch (Exception ex) { StatusText.Text += " 记录保存失败：" + ex.Message; }
-            if (result.Steps.Count > 0 && !result.Cancelled) BeginLongObservation(result);
-        }
-        catch (Exception ex)
-        {
-            StatusText.Text = "整理失败：" + ex.Message; store.Log(ex.ToString());
-            dockStatus.SetResult("整理失败"); mini?.RefreshStatus();
-        }
-        finally
-        {
-            automation.RecordCompletion(success, automatic);
-            if (!preview && operationExecuted) { store.Settings.LastCleanupUtc = DateTimeOffset.UtcNow; SaveSettings(); }
-            operationClock.Stop(); cancellation.Dispose(); cancellation = null;
-            activeAutomatic = false;
-            observingMemory = false; CancelButton.Content = "取消后续";
-            CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = true;
-            if (mini is not null) { mini.CleanButton.IsEnabled = true; mini.IsWorking = false; }
-            CancelButton.Visibility = Visibility.Collapsed; CleanButton.Content = "一键整理";
-            RefreshMemory(); RefreshAutomationSummary(); UpdateChanged();
-            if (exitRequested) TryExit();
-        }
+        if (disposed) return;
+        Presentation.Busy = IsBusy; Presentation.Operation = cleanup.Status;
+        Presentation.CanCancel = cleanup.CanCancel; Presentation.CancelText = cleanup.CancelLabel;
+        if (Presentation.Recent is { } recent) recent.SetPending(cleanup.PendingResult == recent.Id);
+        if (mini is not null) { mini.CleanButton.IsEnabled = !IsBusy && !applying; mini.IsWorking = IsBusy; }
+        sampler.Read(); RefreshAutomationSummary(); UpdateChanged();
+        if (!IsBusy && exitRequested) Dispatcher.BeginInvoke(TryExit);
     }
-    private void Cancel_Click(object sender, RoutedEventArgs e)
+    private void MemoryChanged(MemorySnapshot? snapshot, string error)
     {
-        cancellation?.Cancel(); CancelButton.IsEnabled = false;
-        StatusText.Text = observingMemory ? "已请求结束复测，保留已经执行的步骤与即时观测。" : "已请求取消；等待当前系统调用返回后停止。";
-        SetDockOperation(observingMemory ? "结束复测…" : "取消后续 · 等待返回");
+        Presentation.Load = snapshot?.Load.ToString("0") ?? "—"; Presentation.Percentage = snapshot?.Load ?? 0;
+        Presentation.Available = snapshot is null ? "—" : Labels.Bytes(snapshot.Available);
+        Presentation.Used = snapshot is null ? "—" : Labels.Bytes(snapshot.Used);
+        Presentation.Total = snapshot is null ? "—" : Labels.Bytes(snapshot.Total);
+        Presentation.Commit = snapshot is null ? "—" : Labels.Bytes(snapshot.Commit) + " / " + Labels.Bytes(snapshot.CommitLimit);
+        Presentation.Cache = snapshot?.SystemCache is { } cache ? Labels.Bytes(cache) : "—";
+        Presentation.MemoryError = error; dockStatus.SetMemory(snapshot); mini?.RefreshStatus();
+        if (tray is not null) tray.Text = snapshot is null ? "Click-Clean · 内存读数暂不可用" : $"Click-Clean · {snapshot.Load:0}% · 可用 {Labels.Bytes(snapshot.Available)}";
     }
-    public void ShowResult(CleanupResult result, bool showDock = true, bool historical = false)
+    public void ShowResult(CleanupResult result, bool showDock = true)
     {
-        ResultCard.Visibility = Visibility.Visible;
-        ResultTitle.Text = result.Success ? "步骤完成" : result.Steps.Any(s => s.Success) ? "部分完成" : result.Cancelled ? "已取消" : "整理失败";
-        latestResult = result;
-        if (historical) ResultTitle.Text = "上次 · " + ResultTitle.Text;
-        ResultDelta.Text = (result.FollowUp is null ? "即时可用 " : "复测可用 ") + Labels.Delta(result.PreferredChange);
-        ResultObservationText.Text = result.Sustained is not null ? $"{result.SustainedSeconds:0} 秒持续观测 {Labels.Delta(result.SustainedChange)}" :
-            result.SustainedError is not null ? "持续观测：" + result.SustainedError : longObservation is not null ? "30 秒持续观测中，可继续使用软件" : "持续观测：无记录";
-        ResultMeta.Text = $"{result.Time:MM-dd HH:mm} · {result.Seconds:0.0}s";
-        ResultError.Text = result.Error ?? result.ObservationError ?? (result.Cancelled ? "已停止尚未开始的步骤。" : "观测变化不代表性能提升。");
-        ResultDetails.Text = $"{result.Time:yyyy-MM-dd HH:mm:ss} · {result.Trigger}\n" + string.Join("\n", result.Steps.Select(s => $"{(s.Success ? "✓" : "!")} {Labels.Name(s.Command)} · {s.Seconds:0.00}s · {s.StatusHex}")) +
-            $"\n即时可用变化：{Labels.Delta(result.AvailableChange)}\n即时提交变化：{Labels.Delta(result.CommitChange)}\n" +
-            (result.FollowUp is null ? "复测：未完成 / 无记录" : $"即时采样后 {result.FollowUpSeconds:0.00}s 复测变化：{Labels.Delta(result.FollowUpChange)}") +
-            (result.Sustained is null ? "" : $"\n持续观测 {result.SustainedSeconds:0.0}s 可用变化：{Labels.Delta(result.SustainedChange)}") +
-            $"\n整理前提交：{Labels.Bytes(result.Before.Commit)} / {Labels.Bytes(result.Before.CommitLimit)}" +
-            (result.Before.SystemCache is { } cache ? $"\n整理前系统缓存（含系统工作集，不是纯待机）：{Labels.Bytes(cache)}" : "") +
-            (result.ObservationError is null ? "" : "\n" + result.ObservationError);
-        if (showDock) {
-            var title = result.Success ? "完成" : result.Cancelled ? "已取消" : result.Steps.Any(s => s.Success) ? "部分完成" : "失败";
-            dockStatus.SetResult(title + " · " + (result.PreferredChange is null ? "变化未知" : (result.FollowUp is null ? "即时 " : "复测 ") + Labels.Delta(result.PreferredChange)));
-            mini?.RefreshStatus();
+        if (disposed) return;
+        if (Presentation.Recent?.Id == result.Id) Presentation.Recent.Update(result); else Presentation.Recent = new(result);
+        if (Presentation.Detail?.Id == result.Id) Presentation.Detail.Update(result);
+        RefreshHistory();
+        if (showDock) { dockStatus.SetResult((result.Success ? "完成" : result.Cancelled ? "已取消" : result.Steps.Any(s => s.Success) ? "部分完成" : "失败") + " · " + (result.PreferredChange is null ? "变化未知" : (result.FollowUp is null ? "即时 " : "复测 ") + Labels.Delta(result.PreferredChange))); mini?.RefreshStatus(); }
+    }
+    private void RefreshHistory()
+    {
+        var ids = store.History.Select(r => r.Id).ToHashSet();
+        for (var i = Presentation.History.Count - 1; i >= 0; i--) if (!ids.Contains(Presentation.History[i].Id)) Presentation.History.RemoveAt(i);
+        for (var index = 0; index < store.History.Count; index++) {
+            var value = store.History[index]; var row = Presentation.History.FirstOrDefault(r => r.Id == value.Id);
+            if (row is null) Presentation.History.Insert(index, new(value));
+            else { row.Update(value); var previous = Presentation.History.IndexOf(row); if (previous != index) Presentation.History.Move(previous, index); }
         }
+        HistoryPane.EmptyHistory.Visibility = Presentation.History.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
-    private async void BeginLongObservation(CleanupResult result)
+    private void ProcessesChanged(IReadOnlyList<ProcessGrowthRow> rows, string feedback)
     {
-        var token = new CancellationTokenSource(); longObservation = token;
-        ResultObservationText.Text = "30 秒持续观测中，可继续使用软件";
-        try {
-            var delay = preview ? TimeSpan.FromMilliseconds(200) : TimeSpan.FromSeconds(Math.Max(0, 30 - (result.FollowUpSeconds ?? 0)));
-            var observed = await MemoryObservations.ObserveAsync(result, memory, delay, token.Token);
-            if (!token.IsCancellationRequested && !exiting && ReferenceEquals(longObservation, token)) {
-                store.ReplaceObservation(observed);
-                if (latestResult?.Id == result.Id) ShowResult(observed, false);
+        if (disposed) return;
+        var held = DiagnosticsPane.GrowthItems.IsMouseOver || DiagnosticsPane.GrowthItems.IsKeyboardFocusWithin || DetailsPopup.IsOpen;
+        foreach (var row in Presentation.Processes) { var value = rows.FirstOrDefault(r => r.Current.Id == row.Id && r.Current.StartedUtcTicks == row.Started); if (value is not null) row.Update(value); }
+        if (!held) {
+            var keys = rows.Select(r => (r.Current.Id, r.Current.StartedUtcTicks)).ToHashSet();
+            for (var i = Presentation.Processes.Count - 1; i >= 0; i--) if (!keys.Contains((Presentation.Processes[i].Id, Presentation.Processes[i].Started))) Presentation.Processes.RemoveAt(i);
+            for (var i = 0; i < rows.Count; i++) {
+                var value = rows[i]; var row = Presentation.Processes.FirstOrDefault(r => r.Id == value.Current.Id && r.Started == value.Current.StartedUtcTicks);
+                if (row is null) Presentation.Processes.Insert(i, new(value));
+                else { var index = Presentation.Processes.IndexOf(row); if (index != i) Presentation.Processes.Move(index, i); }
             }
         }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { store.Log("持续观测记录失败：" + ex.Message); }
-        finally { if (ReferenceEquals(longObservation, token)) longObservation = null; token.Dispose(); }
+        Presentation.ProcessFeedback = feedback + (held ? " · 操作中保持行位置" : "");
     }
-    private void StopLongObservation(string? reason = null)
-    {
-        longObservation?.Cancel(); longObservation = null;
-        if (reason is not null && latestResult is { Sustained: null, SustainedError: null } value) {
-            var stopped = value with { SustainedError = reason };
-            try { store.ReplaceObservation(stopped); } catch (Exception ex) { store.Log("保存观测停止状态失败：" + ex.Message); }
-            latestResult = stopped;
-        }
-    }
-    public void SetDockOperation(string text)
-    {
-        dockStatus.SetOperation(text); mini?.RefreshStatus();
-    }
+    public void ApplyTheme(string? overrideTheme = null) { NativeThemeApplied = ThemePalette.Apply(this, overrideTheme ?? store.Settings.Theme, store.Settings.ReduceMotion); if (mini is not null) { mini.MotionAllowed = MotionEnabled; mini.RefreshStatus(); } }
+    private void SystemPreferenceChanged(object? sender, PropertyChangedEventArgs e) { if (!disposed) Dispatcher.BeginInvoke(() => { if (!disposed) { FitWorkArea(); ApplyTheme(); } }); }
+    private void FitWorkArea() { var area = SystemParameters.WorkArea; MinWidth = Math.Min(440, area.Width); MinHeight = Math.Min(540, area.Height); Width = Math.Min(Width, area.Width); Height = Math.Min(Height, area.Height); LayoutRoot.Margin = new(Width < 480 ? 16 : 24, 8, Width < 480 ? 16 : 24, 14); }
+    public void ShowMain() { Show(); WindowState = WindowState.Normal; Activate(); }
+    public void SetDockOperation(string text) { dockStatus.SetOperation(text); mini?.RefreshStatus(); }
     public void PreviewDockIdle(MemorySnapshot snapshot) { dockStatus.SetIdle(); dockStatus.SetMemory(snapshot); mini?.RefreshStatus(); }
-    private void OpenOverlay(string title, bool settings, bool animate)
-    {
-        if (Overlay.Visibility != Visibility.Visible) { overlayReturnFocus = Keyboard.FocusedElement; overlayReturnOffset = MainContent.VerticalOffset; }
-        OverlayTitle.Text = title; SettingsPanel.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
-        HistoryPanel.Visibility = settings ? Visibility.Collapsed : Visibility.Visible;
-        Header.IsEnabled = MainContent.IsEnabled = Footer.IsEnabled = false; Overlay.Visibility = Visibility.Visible;
-        if (animate && MotionEnabled)
-        {
-            // 设置和历史已经是平面工具页，不再从标题按钮缩放成一张大弹卡。
-            Overlay.RenderTransform = Transform.Identity;
-            Overlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0.65, 1, TimeSpan.FromMilliseconds(120)));
-        }
-        else { Overlay.RenderTransform = Transform.Identity; Overlay.BeginAnimation(OpacityProperty, null); Overlay.Opacity = 1; }
-        Overlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
-    }
-    private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings(lastInputWasPointer);
-    public void OpenSettings(bool animate = false)
-    {
-        loadingSettings = true;
-        try
-        {
-            StartupCheck.IsChecked = store.Settings.Startup; MotionCheck.IsChecked = store.Settings.ReduceMotion;
-            ThemeCombo.SelectedIndex = store.Settings.Theme switch { "light" => 1, "dark" => 2, _ => 0 };
-            IslandCheck.IsChecked = store.Settings.MiniIsland;
-            CloseToTrayCheck.IsChecked = store.Settings.CloseToTray;
-            UpdateCheck.IsChecked = store.Settings.CheckUpdates; DownloadCheck.IsChecked = false;
-            ApplyHiddenCheck.IsChecked = false;
-            var a = store.Settings.Automation; ThresholdCheck.IsChecked = a.ThresholdEnabled; TimerCheck.IsChecked = a.TimerEnabled;
-            TriggerModeCombo.SelectedIndex = a.TriggerMode == AutomaticTriggerMode.SystemPressure ? 1 : 0;
-            PauseFullscreenCheck.IsChecked = a.PauseFullscreen; PauseDiskCheck.IsChecked = a.PauseDiskBusy;
-            ThresholdInput.Text = a.ThresholdPercent.ToString(); SustainInput.Text = a.SustainSeconds.ToString();
-            CooldownInput.Text = a.CooldownMinutes.ToString(); IntervalInput.Text = a.IntervalMinutes.ToString(); FullAutoCheck.IsChecked = a.FullCleanup;
-            FullAutoCheck.IsEnabled = false;
-            AutomationFeedback.Text = store.Settings.AutomationNeedsConfirmation ? "本版自动整理改为原版三步，旧自动配置已暂停。已有阈值保留，默认值为55%；请核对后确认保存，或关闭两个开关后保存。" : "";
-        }
-        finally { loadingSettings = false; }
-        ShowSettingsSection("appearance"); OpenOverlay("设置", true, animate);
-    }
-    private void SettingsTab_Click(object sender, RoutedEventArgs e) => ShowSettingsSection((string)((Button)sender).Tag);
-    public void ShowSettingsSection(string section)
-    {
-        AppearanceSection.Visibility = section == "appearance" ? Visibility.Visible : Visibility.Collapsed;
-        AutomationSection.Visibility = section == "automation" ? Visibility.Visible : Visibility.Collapsed;
-        UpdatesSection.Visibility = section == "updates" ? Visibility.Visible : Visibility.Collapsed;
-        AboutSection.Visibility = section == "about" ? Visibility.Visible : Visibility.Collapsed;
-        GrowthSection.Visibility = section == "diagnostics" ? Visibility.Visible : Visibility.Collapsed;
-        growthGeneration++; growthActive = section == "diagnostics";
-        if (growthActive) { growthTracker.Reset(); growthStarted = DateTimeOffset.Now; lastGrowthRead = -10; _ = RefreshGrowth(); }
-    }
-    private void History_Click(object sender, RoutedEventArgs e) => OpenHistory(lastInputWasPointer);
-    public void OpenHistory(bool animate = false)
-    {
-        HistoryItems.Children.Clear();
-        if (store.History.Count == 0) HistoryItems.Children.Add(new TextBlock { Text = "还没有整理记录。", TextWrapping = TextWrapping.Wrap });
-        foreach (var item in store.History)
-        {
-            HistoryItems.Children.Add(CreateHistoryCard(item));
-        }
-        OpenOverlay("整理历史", false, animate);
-    }
-    private static Border CreateHistoryCard(CleanupResult item)
-    {
-        var panel = new StackPanel();
-        var header = new Grid(); header.ColumnDefinitions.Add(new ColumnDefinition()); header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(new TextBlock { Text = $"{item.Time:MM-dd HH:mm}", FontWeight = FontWeights.SemiBold, FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
-        var outcome = new TextBlock { Text = item.Success ? "完成" : item.Cancelled ? "取消" : item.Steps.Any(step => step.Success) ? "部分完成" : "失败", FontSize = 11 };
-        var badge = new Border { Child = outcome, CornerRadius = new CornerRadius(7), Padding = new Thickness(8, 4, 8, 4) };
-        badge.SetResourceReference(Border.BackgroundProperty, "Tint"); Grid.SetColumn(badge, 1); header.Children.Add(badge); panel.Children.Add(header);
-        panel.Children.Add(new TextBlock { Text = (item.FollowUp is null ? "即时可用 " : "复测可用 ") + Labels.Delta(item.PreferredChange), FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 5), TextWrapping = TextWrapping.Wrap });
-        var meta = new TextBlock { Text = $"{item.Trigger} · {item.Seconds:0.0}s · {item.Steps.Count} 个已执行步骤", FontSize = 11, TextWrapping = TextWrapping.Wrap };
-        meta.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); panel.Children.Add(meta);
-        var detail = new TextBlock { Text = string.Join("\n", item.Steps.Select(step => $"{Labels.Name(step.Command)} · {step.Seconds:0.00}s · {step.StatusHex}")) +
-            $"\n即时提交变化：{Labels.Delta(item.CommitChange)}\n" +
-            (item.FollowUp is null ? "复测：无记录 / 未完成" : $"即时采样后 {item.FollowUpSeconds:0.00}s 复测可用变化：{Labels.Delta(item.FollowUpChange)}") +
-            (item.Sustained is null ? "\n持续观测：" + (item.SustainedError ?? "无记录") : $"\n持续观测 {item.SustainedSeconds:0.0}s：{Labels.Delta(item.SustainedChange)}") +
-            (item.Error is null ? "" : "\n" + item.Error) + (item.ObservationError is null ? "" : "\n" + item.ObservationError), TextWrapping = TextWrapping.Wrap, FontSize = 11, Margin = new Thickness(0, 8, 0, 0) };
-        detail.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var expander = new Expander { Header = "查看步骤与返回码", Content = detail, Margin = new Thickness(0, 10, 0, 0) };
-        expander.SetResourceReference(Control.ForegroundProperty, "Muted"); panel.Children.Add(expander);
-        // 历史是证据列表，不应给每条记录重复套一张视觉主卡。
-        var card = new Border { Child = panel, Padding = new Thickness(0, 14, 0, 14), BorderThickness = new Thickness(0, 0, 0, 1) };
-        card.SetResourceReference(Border.BorderBrushProperty, "Line"); return card;
-    }
-    private void CloseOverlay_Click(object sender, RoutedEventArgs e) => CloseOverlay();
-    public void CloseOverlay()
-    {
-        growthActive = false; growthGeneration++;
-        if (Overlay.Visibility != Visibility.Visible) return;
-        Overlay.Visibility = Visibility.Collapsed; Header.IsEnabled = MainContent.IsEnabled = Footer.IsEnabled = true;
-        if (overlayReturnFocus is UIElement target && target.IsVisible && target.IsEnabled) target.Focus(); else SettingsButton.Focus();
-        // 焦点恢复不应把状态主视觉突然滚走。
-        var offset = overlayReturnOffset;
-        _ = Dispatcher.InvokeAsync(() => MainContent.ScrollToVerticalOffset(offset), DispatcherPriority.Loaded);
-    }
-    private void TryRefreshStartup()
-    {
-        try
-        {
-            var existed = StartupTask.Exists();
-            if (existed || store.Settings.Startup)
-            {
-                StartupTask.Set(true); store.Settings.Startup = true;
-                if (store.MigratedLegacy) StartupTask.RemoveLegacy();
-                SaveSettings();
-            }
-        }
-        catch (Exception ex) { store.Log("登录启动状态同步失败：" + ex.Message); }
-    }
-    private void Startup_Click(object sender, RoutedEventArgs e)
-    {
-        if (loadingSettings) return;
-        if (preview) { StatusText.Text = "预览模式不创建登录任务。"; StartupCheck.IsChecked = false; return; }
-        try { StartupTask.Set(StartupCheck.IsChecked == true); store.Settings.Startup = StartupCheck.IsChecked == true; SaveSettings(); }
-        catch (Exception ex) { StartupCheck.IsChecked = store.Settings.Startup; MessageBox.Show(this, ex.Message, "无法修改登录启动"); store.Log(ex.ToString()); }
-    }
-    private void Theme_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (loadingSettings || !IsInitialized || store is null) return;
-        store.Settings.Theme = ThemeCombo.SelectedIndex switch { 1 => "light", 2 => "dark", _ => "system" }; ApplyTheme(); SaveSettings();
-    }
-    private void Preferences_Click(object sender, RoutedEventArgs e)
-    {
-        if (loadingSettings) return;
-        store.Settings.ReduceMotion = MotionCheck.IsChecked == true; store.Settings.MiniIsland = IslandCheck.IsChecked == true;
-        store.Settings.CloseToTray = CloseToTrayCheck.IsChecked == true;
-        store.Settings.CheckUpdates = UpdateCheck.IsChecked == true; store.Settings.AutoDownloadUpdates = false;
-        store.Settings.AutoApplyHidden = false;
-        if (store.Settings.MiniIsland) ShowIsland(); else mini?.Hide();
-        if (mini is not null) mini.MotionAllowed = MotionEnabled;
-        SaveSettings(); SetSampling();
-    }
-    private void SaveAutomation_Click(object sender, RoutedEventArgs e)
-    {
-        if (!ReadNumber(ThresholdInput, 55, 98, out var threshold) || !ReadNumber(SustainInput, 15, 600, out var sustain) ||
-            !ReadNumber(IntervalInput, 15, 1440, out var interval) || !ReadNumber(CooldownInput, 5, 240, out var cooldown))
-        { AutomationFeedback.Text = "请输入标注范围内的整数；设置尚未改变。"; return; }
-        var next = new AutomationSettings { ThresholdEnabled = ThresholdCheck.IsChecked == true, TimerEnabled = TimerCheck.IsChecked == true,
-            ThresholdPercent = threshold, SustainSeconds = sustain, IntervalMinutes = interval, CooldownMinutes = cooldown, FullCleanup = true,
-            TriggerMode = TriggerModeCombo.SelectedIndex == 1 ? AutomaticTriggerMode.SystemPressure : AutomaticTriggerMode.Percentage,
-            PauseFullscreen = PauseFullscreenCheck.IsChecked == true, PauseDiskBusy = PauseDiskCheck.IsChecked == true };
-        if ((next.ThresholdEnabled || next.TimerEnabled) && !preview)
-        {
-            var gate = next.TriggerMode == AutomaticTriggerMode.SystemPressure ? "Windows 报告低内存" : $"达到 {threshold}% 占用门槛";
-            if (MessageBox.Show(this, $"自动模式在{gate}时执行原版三步：裁剪全系统工作集、刷新修改页、清理待机缓存。\n\n这可能造成缺页、短暂卡顿和磁盘忙碌，不保证提速。冷却 {cooldown} 分钟。确认保存并启用所选自动规则？", "确认自动三步整理", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        }
-        store.Settings.Automation = next;
-        store.Settings.AutomationNeedsConfirmation = false;
-        automation.Configure(next);
-        if (activeAutomatic && !next.TimerEnabled && !next.ThresholdEnabled) cancellation?.Cancel();
-        SaveSettings(); RefreshAutomationSummary(); AutomationFeedback.Text = preview ? "已保存预览设置，不会自动执行系统整理。" : "已保存。软件运行期间生效；连续失败暂停后可再次保存恢复。";
-    }
-    private static bool ReadNumber(TextBox field, int min, int max, out int value)
-    { var valid = int.TryParse(field.Text.Trim(), out value) && value >= min && value <= max; if (!valid) field.Focus(); return valid; }
-    private void RefreshAutomationSummary()
-    {
-        var a = store.Settings.Automation;
-        if (store.Settings.AutomationNeedsConfirmation && (a.ThresholdEnabled || a.TimerEnabled) && !IsBusy)
-            StatusText.Text = "旧自动配置已暂停：本版恢复原版三步，请在设置中核对阈值并确认保存。";
-        AutomationSummary.Text = store.Settings.AutomationNeedsConfirmation ? "自动规则变更待确认；已有阈值和开关保留，尚未恢复执行。" : automation.Paused ? "自动清理已暂停：连续失败 3 次，请在设置中恢复。" :
-            $"触发：{(a.ThresholdEnabled ? (a.TriggerMode == AutomaticTriggerMode.SystemPressure ? "系统低内存" : a.ThresholdPercent + "%") + " / " + a.SustainSeconds + "秒" : "关闭")}    定时：{(a.TimerEnabled ? a.IntervalMinutes + "分钟" : "关闭")}";
-        if (a.TimerEnabled && automation.TimerRemaining is { } remaining && !automation.Paused && !store.Settings.AutomationNeedsConfirmation) AutomationSummary.Text += $"\n下一周期约 {Math.Ceiling(remaining.TotalMinutes):0} 分钟后；冷却 {a.CooldownMinutes} 分钟。";
-        AutoStatusText.Text = store.Settings.AutomationNeedsConfirmation ? "自动规则待确认" : automation.Paused ? "自动整理已暂停 · 连续失败" :
-            automation.DeferredReason is { } reason ? "自动整理暂缓 · " + reason + $"；约 {timer.Interval.TotalSeconds:0} 秒后重新评估" : "";
-        AutoStatusText.Visibility = string.IsNullOrEmpty(AutoStatusText.Text) ? Visibility.Collapsed : Visibility.Visible;
-    }
-    private void Island_Click(object sender, RoutedEventArgs e) => ToggleIsland();
-    private void ToggleIsland()
-    {
-        store.Settings.MiniIsland = mini?.IsVisible != true;
-        if (store.Settings.MiniIsland) ShowIsland(); else mini?.Hide();
-        IslandCheck.IsChecked = store.Settings.MiniIsland; SaveSettings(); SetSampling();
-    }
+    private void SetSampling() { if (disposed) return; var visible = IsVisible && WindowState != WindowState.Minimized; sampler.SetVisible(visible, mini?.IsVisible == true && mini.IsRevealed); processes.SetVisible(visible); }
     public void ShowIsland()
     {
+        if (disposed) return;
         if (mini is null) {
-            mini = new MiniIsland(async () => { lastInputWasPointer = true; await RoutineCleanup("底部岛"); }, dockStatus);
-            mini.RevealChanged += () => { SetSampling(); if (mini.IsRevealed) RefreshMemory(); };
+            mini = new MiniIsland(async () => { pointerInput = true; await RoutineCleanup("底部岛"); }, dockStatus);
+            mini.RevealChanged += () => { SetSampling(); if (mini?.IsRevealed == true) sampler.Read(); };
         }
-        mini.MotionAllowed = MotionEnabled; mini.IsWorking = IsBusy;
-        mini.RefreshStatus(); mini.CleanButton.IsEnabled = !IsBusy;
-        mini.Show(); SetSampling();
+        mini.MotionAllowed = MotionEnabled; mini.IsWorking = IsBusy; mini.CleanButton.IsEnabled = !IsBusy && !applying;
+        mini.Show(); mini.RefreshStatus(); SetSampling();
     }
-    private void SetSampling() => timer.Interval = TimeSpan.FromSeconds(IsVisible && WindowState != WindowState.Minimized || mini?.IsVisible == true && mini.IsRevealed ? 1 : 10);
-    private async Task CheckUpdates()
+    private void CreateTray()
     {
-        if (applying) return;
-        if (preview && !simulatedUpdates) { UpdateFeedback.Text = "交互预览不会访问发布服务或替换程序。"; return; }
-        await updates.CheckAsync();
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("打开 Click-Clean 即清", null, (_, _) => Dispatcher.BeginInvoke(ShowMain));
+        menu.Items.Add("一键整理", null, (_, _) => Dispatcher.BeginInvoke(async () => await RoutineCleanup()));
+        menu.Items.Add("显示 / 收起桌面岛", null, (_, _) => Dispatcher.BeginInvoke(() => { Presentation.Settings.Island = mini?.IsVisible != true; }));
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator()); menu.Items.Add("退出", null, (_, _) => Dispatcher.BeginInvoke(TryExit));
+        var icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application;
+        tray = new() { Icon = icon, Text = "Click-Clean 即清", ContextMenuStrip = menu, Visible = true }; tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMain);
+        try { if (StartupTask.Exists() || store.Settings.Startup) { StartupTask.Set(true); store.Settings.Startup = true; if (store.MigratedLegacy) StartupTask.RemoveLegacy(); SaveSettings(); LoadPreferences(); } } catch (Exception ex) { store.Log(ex.ToString()); }
     }
-    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckUpdates();
-    private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
-    {
-        if (applying || preview && !simulatedUpdates) return;
-        await updates.DownloadAsync();
-    }
-    private void CancelUpdate_Click(object sender, RoutedEventArgs e) => updates.Cancel();
-    private async void HomeUpdate_Click(object sender, RoutedEventArgs e)
-    {
-        if (applying || updates.Busy || preview && !simulatedUpdates) return;
-        if (updates.Ready) ApplyUpdate();
-        else if (updates.Available) await updates.DownloadAsync();
-        else await CheckUpdates();
-    }
-    private void UpdateChanged()
-    {
-        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(UpdateChanged); return; }
-        UpdateFeedback.Text = updates.Status; CheckUpdateButton.IsEnabled = !updates.Busy;
-        CancelUpdateButton.Visibility = updates.Busy ? Visibility.Visible : Visibility.Collapsed;
-        HomeCancelUpdate.Visibility = updates.Busy ? Visibility.Visible : Visibility.Collapsed;
-        HomeUpdateProgress.Visibility = updates.Busy && updates.Phase == UpdatePhase.Downloading ? Visibility.Visible : Visibility.Collapsed;
-        HomeUpdateProgress.IsIndeterminate = updates.Progress is null;
-        HomeUpdateProgress.Value = updates.Progress ?? 0;
-        DownloadUpdateButton.Visibility = updates.Available && !updates.Ready ? Visibility.Visible : Visibility.Collapsed;
-        DownloadUpdateButton.IsEnabled = !updates.Busy;
-        ApplyUpdateButton.Visibility = updates.Ready ? Visibility.Visible : Visibility.Collapsed;
-        ApplyUpdateButton.IsEnabled = !updates.Busy && !IsBusy && !applying;
-        var presentation = UpdatePresentation.Create(updates.Phase, updates.Available, updates.Ready, updates.Busy, IsBusy || applying);
-        HomeUpdateBanner.Visibility = presentation.Visible ? Visibility.Visible : Visibility.Collapsed;
-        HomeUpdateText.Text = updates.Status; HomeUpdateButton.Content = presentation.ButtonText;
-        HomeUpdateButton.IsEnabled = presentation.Enabled;
-    }
-    private void ApplyUpdate_Click(object sender, RoutedEventArgs e) => ApplyUpdate();
-    private async void ApplyUpdate()
-    {
-        if (preview && !simulatedUpdates || IsBusy || applying || updates.Busy || !updates.Ready) return;
-        applying = true; timer.Stop(); SaveSettings();
-        try {
-            StopLongObservation("准备重启更新，持续观测停止。");
-            if (!preview) recovery.Prepare(BuildInfo.Version);
-            await updates.ApplyAsync(!IsVisible);
-            // 模拟更新不会退出进程；保证诊断不会留下停掉的采样计时器。
-            if (simulatedUpdates) { applying = false; timer.Start(); UpdateChanged(); }
-        }
-        catch (Exception ex)
-        {
-            if (!preview) recovery.CancelAttempt();
-            applying = false; UpdateFeedback.Text = HomeUpdateText.Text = "更新应用失败，现有版本保留：" + ex.Message;
-            HomeUpdateBanner.Visibility = Visibility.Visible;
-            store.Log(ex.ToString()); timer.Start(); ShowMain();
-        }
-    }
-    private void Repository_Click(object sender, RoutedEventArgs e)
-    { if (BuildInfo.Repository.Length == 0) { MessageBox.Show(this, "此开发构建尚未连接正式仓库。"); return; } OpenExternal(BuildInfo.Repository); }
-    private void ProjectLink_Click(object sender, RoutedEventArgs e)
-    {
-        var uri = ProjectLinks.Resolve((sender as Button)?.Tag as string, BuildInfo.Repository);
-        if (uri is null) { StatusText.Text = "链接配置无效，未打开外部页面。"; return; }
-        projectLinkOpener(uri);
-    }
-    private void License_Click(object sender, RoutedEventArgs e)
-    { var file = Path.Combine(AppContext.BaseDirectory, "LICENSE"); if (File.Exists(file)) OpenExternal(file); else MessageBox.Show(this, "请在正式发行包的 LICENSE 中查看 GPL-3.0 完整条款。"); }
-    private static void OpenExternal(string value)
-    { try { Process.Start(new ProcessStartInfo(value) { UseShellExecute = true }); } catch (Exception ex) { MessageBox.Show(ex.Message, "无法打开"); } }
-    private void SaveSettings()
-    { try { store.SaveSettings(); } catch (Exception ex) { store.Log(ex.ToString()); StatusText.Text = "设置保存失败：" + ex.Message; } }
-    private void ClearHistory_Click(object sender, RoutedEventArgs e)
-    {
-        if (MessageBox.Show(this, "清空本地整理记录？", "清空记录", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-        try { StopLongObservation(); latestResult = null; store.Clear(); ResultCard.Visibility = Visibility.Collapsed; OpenHistory(); } catch (Exception ex) { MessageBox.Show(this, ex.Message); }
-    }
-    private void Export_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new SaveFileDialog { Title = "导出诊断日志", FileName = "Click-Clean-诊断.txt", Filter = "文本文件|*.txt" };
-        if (dialog.ShowDialog(this) != true) return;
-        try { store.Export(dialog.FileName, BuildInfo.Version); MessageBox.Show(this, "已导出。分享前请检查个人信息。", "即清"); } catch (Exception ex) { MessageBox.Show(this, ex.Message); }
-    }
-    private void DeleteData_Click(object sender, RoutedEventArgs e)
-    {
-        if (IsBusy || updates.Busy) { StatusText.Text = "请等当前操作结束后再清除数据。"; return; }
-        if (MessageBox.Show(this, "删除即清自己的设置、历史和诊断日志并退出？不删除旧清栖数据。", "清除本地用户数据", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        try
-        {
-            if (!preview) StartupTask.Set(false);
-            foreach (var file in new[] { "settings.json", "settings.json.tmp", "history.json", "history.json.tmp", "diagnostic.log", "diagnostic.log.previous", "migration.json", "update-state.json", "update-state.json.tmp" })
-                File.Delete(Path.Combine(store.Root, file));
-            TryExit();
-        }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "清除失败"); }
-    }
-    private void Exit_Click(object sender, RoutedEventArgs e) => TryExit();
     public void TryExit()
     {
-        if (IsBusy) { exitRequested = true; ShowMain(); cancellation?.Cancel(); StatusText.Text = "等待当前步骤返回后退出，已取消后续步骤。"; return; }
-        exiting = true; DisposeResources(); Application.Current.Shutdown();
+        if (!CheckDraft()) return;
+        if (IsBusy) { exitRequested = true; ShowMain(); cleanup.Cancel(); return; }
+        DisposeResources(); Application.Current.Shutdown();
     }
-    private void OnClosing(object? sender, CancelEventArgs e)
-    {
-        if (exiting) return;
-        e.Cancel = true;
-        if (store.Settings.CloseToTray && !preview) Hide(); else TryExit();
-    }
+    private void OnClosing(object? sender, CancelEventArgs e) { if (disposed) return; e.Cancel = true; if (store.Settings.CloseToTray && !preview) { ClosePopup(); Hide(); } else TryExit(); }
     public void DisposeResources()
     {
-        growthActive = false; growthGeneration++; StopLongObservation(); environmentReader?.Dispose();
-        timer.Stop(); updates.Dispose(); mini?.Close(); mini = null;
+        if (disposed) return; disposed = true;
+        ClosePopup(); SystemParameters.StaticPropertyChanged -= SystemPreferenceChanged; updates.Changed -= UpdateChanged;
+        Presentation.Settings.PropertyChanged -= PreferenceChanged;
+        processes.Dispose(); sampler.Dispose(); cleanup.Dispose(); updates.Dispose(); mini?.Close(); mini = null;
         if (tray is not null) { var icon = tray.Icon; tray.Visible = false; tray.Dispose(); icon?.Dispose(); tray = null; }
     }
-    private void Growth_Click(object sender, RoutedEventArgs e) { OpenSettings(lastInputWasPointer); ShowSettingsSection("diagnostics"); }
-    private async void RefreshGrowth_Click(object sender, RoutedEventArgs e) => await RefreshGrowth();
-    private async Task RefreshGrowth()
-    {
-        if (!growthActive || growthReading || exiting || !IsVisible) return;
-        growthReading = true; lastGrowthRead = uptime.Elapsed.TotalSeconds;
-        var generation = growthGeneration;
-        try {
-            var batch = await Task.Run(processReader.Read);
-            if (!growthActive || generation != growthGeneration || exiting) return;
-            var rows = growthTracker.Compare(batch.Samples);
-            GrowthItems.Children.Clear();
-            foreach (var row in rows) {
-                var grid = new Grid { Margin = new Thickness(0, 5, 0, 5) };
-                grid.ColumnDefinitions.Add(new()); grid.ColumnDefinitions.Add(new() { Width = new GridLength(90) }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(85) });
-                var name = new TextBlock { Text = row.Current.Name, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = $"PID {row.Current.Id}" };
-                var size = new TextBlock { Text = $"{row.Current.PrivateBytes / 1048576d:0.0} MiB", HorizontalAlignment = HorizontalAlignment.Right, FontSize = 11 };
-                var change = new TextBlock { Text = row.PrivateGrowth is null ? "新 / 基线" : $"{(row.PrivateGrowth >= 0 ? "+" : "−")}{Math.Abs((double)row.PrivateGrowth) / 1048576d:0.0} MiB", HorizontalAlignment = HorizontalAlignment.Right, FontSize = 11 };
-                grid.Children.Add(name); Grid.SetColumn(size, 1); grid.Children.Add(size); Grid.SetColumn(change, 2); grid.Children.Add(change);
-                GrowthItems.Children.Add(grid);
-            }
-            GrowthFeedback.Text = $"本次观察 {(DateTimeOffset.Now - growthStarted).TotalSeconds:0} 秒 · 读取 {batch.Samples.Count} 个进程 · {batch.Unavailable} 个暂不可读\n私有内存增长不等于泄漏；关闭此页停止扫描。";
-        }
-        catch (Exception ex) { if (generation == growthGeneration) GrowthFeedback.Text = "进程读数暂不可用：" + ex.Message; }
-        finally { growthReading = false; }
-    }
-    private void Recovery_Click(object sender, RoutedEventArgs e) => OpenExternal(BuildInfo.Repository.TrimEnd('/') + "/releases");
-    private Button? pressedButton;
-    private void AnimatePress(object sender, MouseButtonEventArgs e)
-    {
-        lastInputWasPointer = true;
-        if (e.ChangedButton != MouseButton.Left || !MotionEnabled) return;
-        DependencyObject? source = e.OriginalSource as DependencyObject;
-        while (source is not null && source is not Button)
-            source = source is FrameworkContentElement content ? content.Parent : VisualTreeHelper.GetParent(source);
-        if (source is not Button button || !button.IsEnabled) return;
-        pressedButton = button; AnimateButton(button, 0.97);
-    }
-    private void AnimateRelease(object sender, MouseButtonEventArgs e)
-    { if (pressedButton is not null) { AnimateButton(pressedButton, 1); pressedButton = null; } }
-    private static void AnimateButton(Button button, double value)
-    {
-        if (button.RenderTransform is not ScaleTransform) { button.RenderTransform = new ScaleTransform(1, 1); button.RenderTransformOrigin = new Point(0.5, 0.5); }
-        var scale = (ScaleTransform)button.RenderTransform;
-        var animation = new DoubleAnimation(value, TimeSpan.FromMilliseconds(120)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, animation); scale.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
-    }
+    private static void OpenExternal(string value) => Process.Start(new ProcessStartInfo(value) { UseShellExecute = true });
+    public object? FindUiElement(string name) => FindName(name) ?? OverviewPane.FindName(name) ?? HistoryPane.FindName(name) ?? DiagnosticsPane.FindName(name) ?? SettingsPane.FindName(name);
     public void RenderTo(string path, double factor = 1) => Capture(this, path, factor);
     public static void Capture(Window window, string path, double factor = 1)
     {
         window.UpdateLayout();
         var bitmap = new RenderTargetBitmap((int)(window.ActualWidth * factor), (int)(window.ActualHeight * factor), 96 * factor, 96 * factor, PixelFormats.Pbgra32);
-        if (window.Background is { } background && background != Brushes.Transparent)
-        {
-            var backing = new DrawingVisual();
-            using (var drawing = backing.RenderOpen()) drawing.DrawRectangle(background, null, new Rect(0, 0, window.ActualWidth, window.ActualHeight));
-            bitmap.Render(backing);
+        if (window.Background is { } background && background != Brushes.Transparent) {
+            var backing = new DrawingVisual(); using (var drawing = backing.RenderOpen()) drawing.DrawRectangle(background, null, new Rect(0, 0, window.ActualWidth, window.ActualHeight)); bitmap.Render(backing);
         }
-        bitmap.Render(window); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        using var stream = File.Create(path); encoder.Save(stream);
+        bitmap.Render(window); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var stream = File.Create(path); encoder.Save(stream);
     }
 }
 

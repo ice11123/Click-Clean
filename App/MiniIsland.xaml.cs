@@ -108,11 +108,12 @@ public partial class MiniIsland : Window
         if (disposed) return;
         StatusLabel.Text = status.Text;
         AutomationProperties.SetName(CleanButton, status.Text + "；点击执行原版三步：裁剪工作集、刷新修改页、清理待机缓存");
-        var color = status.Pressure switch {
-            MemoryPressureBand.Low => Color.FromRgb(112, 207, 164),
-            MemoryPressureBand.Moderate => Color.FromRgb(238, 190, 104),
-            MemoryPressureBand.High => Color.FromRgb(242, 125, 124),
-            _ => Color.FromRgb(151, 160, 175)
+        var dark = Application.Current.Resources["IslandBg"] is SolidColorBrush background && background.Color.R + background.Color.G + background.Color.B < 384;
+        var color = SystemParameters.HighContrast ? SystemColors.WindowTextColor : status.Pressure switch {
+            MemoryPressureBand.Low => dark ? Color.FromRgb(112, 207, 164) : Color.FromRgb(35, 122, 87),
+            MemoryPressureBand.Moderate => dark ? Color.FromRgb(238, 190, 104) : Color.FromRgb(150, 96, 30),
+            MemoryPressureBand.High => dark ? Color.FromRgb(242, 125, 124) : Color.FromRgb(180, 58, 78),
+            _ => dark ? Color.FromRgb(151, 160, 175) : Color.FromRgb(91, 105, 123)
         };
         if (dotTarget != color)
         {
@@ -137,7 +138,7 @@ public partial class MiniIsland : Window
         breathing = enabled;
         Dot.BeginAnimation(OpacityProperty, null); Dot.Opacity = 1;
         if (enabled) {
-            var pulse = new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(1200)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            var pulse = new DoubleAnimation(0.7, 1, TimeSpan.FromMilliseconds(1400)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
             // 慢速呼吸不需要60Hz，降低透明窗口的持续合成代价。
             Timeline.SetDesiredFrameRate(pulse, 30); Dot.BeginAnimation(OpacityProperty, pulse);
         }

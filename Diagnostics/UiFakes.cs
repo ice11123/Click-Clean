@@ -32,12 +32,13 @@ internal sealed class FakeApplicationUpdates : IApplicationUpdates
 internal sealed class TrackingMemoryApi : IMemoryApi
 {
     public bool FailRead { get; set; }
+    public MemoryCommand? FailureCommand { get; set; }
     public ulong Available { get; set; } = 12UL << 30;
     public List<MemoryCommand> Calls { get; } = [];
     public int Privileges { get; private set; }
     public MemorySnapshot Read() => FailRead ? throw new IOException("模拟读数不可用") : new(32UL << 30, Available, 21UL << 30, 48UL << 30);
     public IDisposable EnablePrivilege() { Privileges++; return new Scope(); }
-    public int Execute(MemoryCommand command) { Thread.Sleep(350); Calls.Add(command); Available += 256UL << 20; return 0; }
+    public int Execute(MemoryCommand command) { Thread.Sleep(350); Calls.Add(command); if (FailureCommand == command) return unchecked((int)0xC0000022); Available += 256UL << 20; return 0; }
     private sealed class Scope : IDisposable { public void Dispose() { } }
 }
 internal sealed class FakeEnvironment : IAutomationEnvironmentReader
