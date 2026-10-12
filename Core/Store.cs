@@ -7,7 +7,7 @@ public sealed class UserSettings
     public int SchemaVersion { get; set; } = 4;
     public bool AutomationNeedsConfirmation { get; set; }
     public bool Startup { get; set; }
-    public string Theme { get; set; } = "system";
+    public string Theme { get; set; } = "light";
     public bool ReduceMotion { get; set; }
     public bool MiniIsland { get; set; } = true;
     public bool CloseToTray { get; set; } = true;
@@ -115,7 +115,10 @@ public sealed class Store
         (result.After is null || result.After.Total <= long.MaxValue && result.After.Available <= result.After.Total && result.After.Commit <= long.MaxValue) &&
         (result.FollowUp is null || result.FollowUp.Total <= long.MaxValue && result.FollowUp.Available <= result.FollowUp.Total && result.FollowUp.Commit <= long.MaxValue) &&
         (result.FollowUpSeconds is null || double.IsFinite(result.FollowUpSeconds.Value) && result.FollowUpSeconds >= 0) &&
-        (result.FollowUp is null || result.FollowUpSeconds is not null);
+        (result.FollowUp is null || result.FollowUpSeconds is not null) &&
+        (result.Sustained is null || result.Sustained.Total > 0 && result.Sustained.Total <= long.MaxValue && result.Sustained.Available <= result.Sustained.Total && result.Sustained.Commit <= long.MaxValue) &&
+        (result.SustainedSeconds is null || double.IsFinite(result.SustainedSeconds.Value) && result.SustainedSeconds >= 0) &&
+        (result.Sustained is null || result.SustainedSeconds is not null);
     private void Save(string name, object value)
     {
         lock (gate)
@@ -131,6 +134,14 @@ public sealed class Store
         if (!ValidResult(result)) throw new ArgumentException("整理结果无效。");
         History.Insert(0, result); History = History.Take(30).ToList();
         Save("history.json", History); Log(JsonSerializer.Serialize(result));
+    }
+    public bool ReplaceObservation(CleanupResult result)
+    {
+        if (!ValidResult(result)) throw new ArgumentException("观测记录无效。");
+        var index = History.FindIndex(item => item.Id == result.Id);
+        // 清空历史后迟到的观测不得重新插入记录。
+        if (index < 0) return false;
+        History[index] = result; Save("history.json", History); return true;
     }
     public void Clear() { History.Clear(); Save("history.json", History); }
     public void Log(string message)

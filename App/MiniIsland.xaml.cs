@@ -20,14 +20,16 @@ public partial class MiniIsland : Window
     private bool working;
     private int backgroundState;
     private bool shown, invoking, disposed, verificationOverride;
+    private Color? dotTarget;
     private IntPtr handle;
-    public bool MotionAllowed { get => motionAllowed; set { motionAllowed = value; RefreshBreathing(); RefreshBackground(); } }
+    public bool MotionAllowed { get => motionAllowed; set { motionAllowed = value; FinishColorTransition(); RefreshBreathing(); RefreshBackground(); } }
     public bool IsWorking { get => working; set { working = value; RefreshBackground(); } }
     public bool BreathingActive => breathing;
     public bool BackgroundMotionActive => AmbientGlow.HasAnimatedProperties || AmbientShift.HasAnimatedProperties;
     public bool ResultTimerActive => resultTimer.IsEnabled;
     public bool IsRevealed => shown;
     public bool PointerPollingActive => pointerTimer.IsEnabled;
+    public double PointerPollingMilliseconds => pointerTimer.Interval.TotalMilliseconds;
     public event Action? RevealChanged;
 
     public MiniIsland(Func<Task> clean, DockStatus? status = null)
@@ -71,9 +73,12 @@ public partial class MiniIsland : Window
     private void PollPointer()
     {
         if (disposed || verificationOverride || !IsVisible || handle == IntPtr.Zero) return;
-        var fullscreen = Native.PrimaryFullscreen(handle);
-        if (!Native.GetCursorPos(out var screen)) { reveal.Reset(); Reveal(false, false); return; }
+        if (!Native.GetCursorPos(out var screen)) { reveal.Reset(); Reveal(false, false); pointerTimer.Interval = TimeSpan.FromMilliseconds(500); return; }
         var point = PointFromScreen(new Point(screen.X, screen.Y));
+        var nearby = shown || new Rect(-120, -80, Width + 240, Height + 160).Contains(point);
+        pointerTimer.Interval = TimeSpan.FromMilliseconds(nearby ? 150 : 500);
+        // 远离任务栏时只检测鼠标位置，避免每次都查询前台窗口。
+        var fullscreen = nearby && ForegroundActivity.IsFullscreen();
         // 仅在任务栏上边缘附近触发；展开后使用较大保持区域，避免边界来回跳动。
         UpdatePointer(point, fullscreen, clock.Elapsed.TotalSeconds);
     }
@@ -94,6 +99,7 @@ public partial class MiniIsland : Window
         IslandMotion.To(Slide, TranslateTransform.YProperty, value ? 0 : 48, 150, motion);
         IslandMotion.Opacity(CleanButton, value ? 1 : 0, 150, motion);
         if (!value) SetPressed(false, false);
+        if (!value) FinishColorTransition();
         RefreshStatus();
         if (changed) RevealChanged?.Invoke();
     }
@@ -101,14 +107,21 @@ public partial class MiniIsland : Window
     {
         if (disposed) return;
         StatusLabel.Text = status.Text;
-        AutomationProperties.SetName(CleanButton, status.Text + "；点击检查内存压力并按需整理待机缓存");
+        AutomationProperties.SetName(CleanButton, status.Text + "；点击执行原版三步：裁剪工作集、刷新修改页、清理待机缓存");
         var color = status.Pressure switch {
             MemoryPressureBand.Low => Color.FromRgb(112, 207, 164),
             MemoryPressureBand.Moderate => Color.FromRgb(238, 190, 104),
             MemoryPressureBand.High => Color.FromRgb(242, 125, 124),
             _ => Color.FromRgb(151, 160, 175)
         };
-        if (Dot.Fill is not SolidColorBrush brush || brush.Color != color) Dot.Fill = new SolidColorBrush(color);
+        if (dotTarget != color)
+        {
+            var brush = Dot.Fill is SolidColorBrush existing && !existing.IsFrozen ? existing : new SolidColorBrush(color);
+            var current = brush.Color; brush.BeginAnimation(SolidColorBrush.ColorProperty, null); brush.Color = color; Dot.Fill = brush; dotTarget = color;
+            // 轻量颜色过渡表达分档变化；减少动画和收起时直接显示最终颜色。
+            if (shown && MotionAllowed && SystemParameters.ClientAreaAnimation && !SystemParameters.HighContrast)
+                brush.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(current, color, TimeSpan.FromMilliseconds(180)) { FillBehavior = FillBehavior.Stop });
+        }
         resultTimer.Stop();
         var remaining = status.ResultRemaining;
         if (IsVisible && shown && remaining > TimeSpan.Zero) {
@@ -123,9 +136,17 @@ public partial class MiniIsland : Window
         if (enabled == breathing) return;
         breathing = enabled;
         Dot.BeginAnimation(OpacityProperty, null); Dot.Opacity = 1;
-        if (enabled) Dot.BeginAnimation(OpacityProperty, new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(1200)) {
-            AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever
-        });
+        if (enabled) {
+            var pulse = new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(1200)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            // 慢速呼吸不需要60Hz，降低透明窗口的持续合成代价。
+            Timeline.SetDesiredFrameRate(pulse, 30); Dot.BeginAnimation(OpacityProperty, pulse);
+        }
+    }
+    private void FinishColorTransition()
+    {
+        if ((!shown || !MotionAllowed || !SystemParameters.ClientAreaAnimation || SystemParameters.HighContrast) && Dot.Fill is SolidColorBrush brush && !brush.IsFrozen && dotTarget is { } target) {
+            brush.BeginAnimation(SolidColorBrush.ColorProperty, null); brush.Color = target;
+        }
     }
     private void RefreshBackground()
     {
@@ -150,6 +171,7 @@ public partial class MiniIsland : Window
             var progressGlow = new DoubleAnimationUsingKeyFrames { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
             progressGlow.KeyFrames.Add(new DiscreteDoubleKeyFrame(-10, KeyTime.FromTimeSpan(TimeSpan.Zero)));
             progressGlow.KeyFrames.Add(new SplineDoubleKeyFrame(10, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(1200)), new KeySpline(0.77, 0, 0.175, 1)));
+            Timeline.SetDesiredFrameRate(progressGlow, 30);
             AmbientShift.BeginAnimation(TranslateTransform.XProperty, progressGlow);
         }
     }

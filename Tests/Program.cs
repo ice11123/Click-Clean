@@ -7,6 +7,11 @@ async Task Check(string name, Func<Task> test)
 }
 void Assert(bool condition) { if (!condition) throw new Exception("断言失败"); }
 var all = Enum.GetValues<MemoryCommand>();
+await Check("新安装默认开启底部岛并使用浅色主题，已有主题与关闭选择保留", () => {
+    var defaults = new UserSettings(); defaults.Validate(); Assert(defaults.MiniIsland && defaults.Theme == "light");
+    var previous = new UserSettings { Theme = "dark", MiniIsland = false }; previous.Validate(); Assert(previous.Theme == "dark" && !previous.MiniIsland);
+    return Task.CompletedTask;
+});
 await Check("手动快捷入口低占用也恢复原版三步", () => {
     Assert(RoutineCleanupPolicy.Evaluate(new(1000, 900, 200, 2000)).Commands.SequenceEqual(all));
     return Task.CompletedTask;
@@ -311,6 +316,87 @@ await Check("新观测历史往返兼容旧记录，拒绝坏复测间隔", () =
     Assert(!Store.ValidResult(result with { FollowUpSeconds = double.NaN }) && !Store.ValidResult(result with { FollowUpSeconds = null }));
     Assert(Store.ValidResult(result with { FollowUp = null, FollowUpSeconds = null }));
     return Task.CompletedTask;
+});
+await Check("全屏避让保留一次到期周期，解除后执行且不连跑", () => {
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { TimerEnabled = true, IntervalMinutes = 15 });
+    for (var i = 0; i < 15; i++) { Assert(policy.Evaluate(80, false, new(Fullscreen: true)) is null); clock.Advance(60); }
+    Assert(policy.Evaluate(80, false, new(Fullscreen: true)) is null && policy.DeferredReason is not null && policy.TimerRemaining == TimeSpan.Zero);
+    Assert(policy.Evaluate(80, false, new(Fullscreen: false)) == "定时");
+    Assert(policy.Evaluate(80, false) is null); return Task.CompletedTask;
+});
+await Check("磁盘繁忙或未知暂缓，关闭避让可恢复", () => {
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, SustainSeconds = 15 });
+    Assert(policy.Evaluate(80, false, new(DiskBusy: true)) is null && policy.DeferredReason == "磁盘繁忙");
+    clock.Advance(60); Assert(policy.Evaluate(80, false, new(DiskBusy: null)) is null && policy.DeferredReason is not null);
+    policy.Configure(new() { ThresholdEnabled = true, SustainSeconds = 15, PauseDiskBusy = false });
+    policy.Evaluate(80, false, new(DiskBusy: null)); clock.Advance(15);
+    Assert(policy.Evaluate(80, false, new(DiskBusy: null)) == "阈值"); return Task.CompletedTask;
+});
+await Check("系统压力模式依赖Windows信号，低百分比仍能触发", () => {
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, TriggerMode = AutomaticTriggerMode.SystemPressure, SustainSeconds = 15 });
+    Assert(policy.Evaluate(99, false, new(LowMemory: false)) is null);
+    Assert(policy.Evaluate(99, false, new(LowMemory: null)) is null && policy.DeferredReason is not null);
+    policy.Evaluate(40, false, new(LowMemory: true)); clock.Advance(15);
+    Assert(policy.Evaluate(40, false, new(LowMemory: true)) == "系统压力");
+    clock.Advance(60); Assert(policy.Evaluate(99, false, new(LowMemory: true)) is null); return Task.CompletedTask;
+});
+await Check("呼吸灯迟滞不更改实时内存数字", () => {
+    var status = new DockStatus();
+    void Set(int load) => status.SetMemory(new(100, (ulong)(100 - load), 100, 200));
+    Set(59); Set(61); Assert(status.Pressure == MemoryPressureBand.Low && status.Memory!.Load == 61);
+    Set(62); Assert(status.Pressure == MemoryPressureBand.Moderate);
+    Set(59); Assert(status.Pressure == MemoryPressureBand.Moderate); Set(57); Assert(status.Pressure == MemoryPressureBand.Low);
+    Set(90); Set(84); Assert(status.Pressure == MemoryPressureBand.High); Set(82); Assert(status.Pressure == MemoryPressureBand.Moderate);
+    status.SetMemory(null); Assert(status.Pressure == MemoryPressureBand.Unknown); return Task.CompletedTask;
+});
+await Check("持续观测保留负变化且不执行整理或提权", async () => {
+    var api = new FakeApi { ReadValue = _ => 80 };
+    var before = new MemorySnapshot(1000, 100, 500, 2000);
+    var result = new CleanupResult(DateTimeOffset.Now, before, before with { Available = 140 }, [new(MemoryCommand.StandbyCache, 0, 0)], false, null, 3) { FollowUp = before with { Available = 110 }, FollowUpSeconds = 3 };
+    var observed = await MemoryObservations.ObserveAsync(result, api, TimeSpan.FromMilliseconds(20));
+    Assert(observed.Id == result.Id && observed.SustainedChange == -20 && observed.PreferredChange == 10 && api.Calls.Count == 0 && !api.Restored);
+});
+await Check("新操作取消持续观测，不写入迟到样本", async () => {
+    using var token = new CancellationTokenSource(); var api = new FakeApi();
+    var before = new MemorySnapshot(1000, 100, 500, 2000);
+    var result = new CleanupResult(DateTimeOffset.Now, before, before, [], false, null, 0);
+    var task = MemoryObservations.ObserveAsync(result, api, TimeSpan.FromSeconds(1), token.Token); token.Cancel();
+    try { await task; throw new Exception("取消未生效"); } catch (OperationCanceledException) { }
+    Assert(api.Calls.Count == 0);
+});
+await Check("持续观测失败保留原步骤状态，不伪造零变化", async () => {
+    var before = new MemorySnapshot(1000, 100, 500, 2000);
+    var result = new CleanupResult(DateTimeOffset.Now, before, before, [new(MemoryCommand.StandbyCache, 0, 0)], false, null, 0);
+    var observed = await MemoryObservations.ObserveAsync(result, new FakeApi { ReadFailure = 1 }, TimeSpan.Zero);
+    Assert(observed.Success && observed.Sustained is null && observed.SustainedChange is null && observed.SustainedError is not null);
+});
+await Check("持续观测更新原历史，清空后不复活记录", () => {
+    var directory = Path.Combine(Path.GetTempPath(), "ClickClean-observation-" + Guid.NewGuid().ToString("N"));
+    try {
+        var store = new Store(directory); var before = new MemorySnapshot(1000, 100, 500, 2000);
+        var result = new CleanupResult(DateTimeOffset.Now, before, before, [new(MemoryCommand.StandbyCache, 0, 0)], false, null, 0);
+        store.Add(result); var observed = result with { Sustained = before with { Available = 90 }, SustainedSeconds = 30 };
+        Assert(store.ReplaceObservation(observed) && store.History.Count == 1 && new Store(directory).History[0].SustainedChange == -10);
+        store.Clear(); Assert(!store.ReplaceObservation(observed) && store.History.Count == 0);
+        Assert(!Store.ValidResult(observed with { SustainedSeconds = double.NaN }));
+    } finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    return Task.CompletedTask;
+});
+await Check("增长排行按私有内存差值排序，不把PID重用当增长", () => {
+    var tracker = new ProcessGrowthTracker();
+    Assert(tracker.Compare([new(1, 100, "a", 1000, 2000)]).Single().PrivateGrowth is null);
+    var rows = tracker.Compare([new(1, 100, "a", 900, 2100), new(2, 200, "b", 1000, 2000)]);
+    Assert(rows[0].Current.Id == 1 && rows[0].PrivateGrowth == -100);
+    Assert(tracker.Compare([new(1, 101, "replacement", 5000, 5000)]).Single().PrivateGrowth is null);
+    tracker.Reset(); Assert(tracker.Compare([new(1, 101, "replacement", 5000, 5000)]).Single().PrivateGrowth is null);
+    return Task.CompletedTask;
+});
+await Check("决策后场景变化的暂缓不会丢失触发或计入失败冷却", () => {
+    var clock = new FakeTime(); var policy = new AutomationPolicy(clock); policy.Configure(new() { ThresholdEnabled = true, SustainSeconds = 15 });
+    policy.Evaluate(80, false); clock.Advance(15); Assert(policy.Evaluate(80, false) == "阈值");
+    policy.DeferAttempt(false, "全屏"); Assert(policy.ConsecutiveFailures == 0 && policy.DeferredReason == "全屏");
+    policy.Evaluate(80, false); clock.Advance(15); Assert(policy.Evaluate(80, false) == "阈值");
+    policy.RecordCompletion(true, true); Assert(policy.DeferredReason is null); return Task.CompletedTask;
 });
 Console.WriteLine($"全部通过：{passed}组测试（含7种组合及3种失败位置）。");
 

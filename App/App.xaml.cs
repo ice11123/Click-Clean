@@ -52,12 +52,14 @@ public partial class App : Application
             // 安装与卸载要求用户先正常退出，不能强制中断正在刷盘的系统调用。
             installerGuard = new Mutex(false, @"Local\ClickClean.InstallationActive");
             var store = new Store();
+            var recovery = new UpdateRecovery(store.Root); recovery.BeginLaunch();
             InstallationMetadata.RefreshVersion(store);
             DispatcherUnhandledException += (_, args) => {
                 store.Log(args.Exception.ToString());
                 MessageBox.Show(args.Exception.Message, "Click-Clean 运行错误"); args.Handled = true;
             };
             var window = new MainWindow(store, e.Args.Contains("--tray")); MainWindow = window;
+            Dispatcher.BeginInvoke(() => recovery.MarkHealthy(BuildInfo.Version), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             waiter = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => Dispatcher.BeginInvoke(window.ShowMain), null, Timeout.Infinite, false);
             exitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\ClickClean.Exit." + suffix);
             exitWaiter = ThreadPool.RegisterWaitForSingleObject(exitSignal, (_, _) => Dispatcher.BeginInvoke(window.TryExit), null, Timeout.Infinite, false);

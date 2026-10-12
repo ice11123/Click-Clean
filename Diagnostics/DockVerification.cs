@@ -82,6 +82,7 @@ internal static class DockVerification
                 island.IsWorking = false; await Task.Delay(220); Assert(!island.BackgroundMotionActive, "整理结束背景不持续动画");
                 foreach (var sample in new[] { (900UL, "#FF70CFA4"), (370UL, "#FFEEBE68"), (100UL, "#FFF27D7C") }) {
                     status.SetMemory(new(1000, sample.Item1, 500, 2000)); island.RefreshStatus();
+                    await Task.Delay(220);
                     Assert(((SolidColorBrush)dot.Fill).Color.ToString() == sample.Item2 && island.BreathingActive, "呼吸灯按占用分档且数字刷新不停止动画：" + sample.Item1);
                 }
                 status.SetMemory(null); island.RefreshStatus();

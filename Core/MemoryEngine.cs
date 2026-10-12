@@ -19,11 +19,17 @@ public record StepResult(MemoryCommand Command, int Status, double Seconds)
 public record CleanupResult(DateTimeOffset Time, MemorySnapshot Before, MemorySnapshot? After,
     List<StepResult> Steps, bool Cancelled, string? Error, double Seconds)
 {
+    public Guid Id { get; init; } = Guid.NewGuid();
     public long? AvailableChange => After is null ? null : checked((long)After.Available - (long)Before.Available);
     public string Trigger { get; init; } = "手动";
     public string? ObservationError { get; init; }
     public MemorySnapshot? FollowUp { get; init; }
     public double? FollowUpSeconds { get; init; }
+    public MemorySnapshot? Sustained { get; init; }
+    public double? SustainedSeconds { get; init; }
+    public string? SustainedError { get; init; }
+    public long? SustainedChange => Sustained is null ? null : checked((long)Sustained.Available - (long)Before.Available);
+    public long? PreferredChange => FollowUp is null ? AvailableChange : FollowUpChange;
     public long? FollowUpChange => FollowUp is null ? null : checked((long)FollowUp.Available - (long)Before.Available);
     public long? CommitChange => After is null ? null : checked((long)After.Commit - (long)Before.Commit);
     public bool Success => Error is null && !Cancelled && Steps.Count > 0 && Steps.All(s => s.Success);

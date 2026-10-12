@@ -48,9 +48,61 @@ internal static class UpdateVerification
             catch (Velopack.Exceptions.ChecksumFailedException) { rejected = true; }
             Assert(rejected, "损坏更新包被校验拒绝");
             Assert(corruptManager.UpdatePendingRestart is null, "损坏更新包不标记为就绪");
+            await ServiceChecks(update!, feedPath, output, (value, message) => Assert(value, message));
             File.WriteAllText(Path.Combine(output, "verification.json"), JsonSerializer.Serialize(new { Checks = checks }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex) { File.WriteAllText(Path.Combine(output, "failure.txt"), ex.ToString()); throw; }
+    }
+
+    private static async Task ServiceChecks(UpdateInfo update, string feed, string output, Action<bool, string> assert)
+    {
+        var area = Path.Combine(output, "service-contracts"); Directory.CreateDirectory(area);
+        var transport = new FaultTransport(update, area);
+        using var service = new UpdateService(Path.Combine(area, "prepared.json"), () => transport, TimeSpan.FromMilliseconds(100));
+        transport.Check = () => Task.FromException<UpdateInfo?>(new IOException("模拟离线"));
+        await service.CheckAsync(); assert(!service.Busy && service.Phase == UpdatePhase.Failed && !service.Ready, "实际更新服务离线失败可恢复，不标记就绪");
+        transport.Check = () => new TaskCompletionSource<UpdateInfo?>().Task;
+        await service.CheckAsync(); assert(!service.Busy && service.Status.Contains("超时"), "实际更新服务检查超时解除忙碌状态");
+        var checking = service.CheckAsync(); service.Cancel(); await checking;
+        assert(!service.Busy && service.Status.Contains("取消"), "实际检查可取消，迟到检查不会更改UI状态");
+        transport.Check = () => Task.FromResult<UpdateInfo?>(update);
+        await service.CheckAsync(); assert(service.Available && !service.Ready && transport.Downloads == 0, "自动检查不进入下载或应用路径");
+        transport.Download = async (progress, token) => { progress(45); await Task.Delay(Timeout.Infinite, token); };
+        var download = service.DownloadAsync();
+        await Task.Delay(10); assert(service.Busy && service.Progress == 45, "真实下载接口进度传递到应用服务");
+        service.Cancel(); await download;
+        assert(!service.Busy && !service.Ready && !File.Exists(Path.Combine(area, "prepared.json")), "取消下载不保存就绪标记");
+        transport.Download = (_, _) => Task.FromException(new IOException("模拟磁盘空间不足"));
+        await service.DownloadAsync(); assert(!service.Ready && !service.Busy && service.Status.Contains("空间不足"), "模拟磁盘不足保留旧版本并显示可重试错误");
+        transport.Download = (_, _) => { File.WriteAllBytes(Path.Combine(area, update.TargetFullRelease.FileName), [1, 2, 3]); return Task.CompletedTask; };
+        await service.DownloadAsync(); assert(!service.Ready && service.Phase == UpdatePhase.Failed, "实际服务拒绝损坏包而非只信传输成功");
+        transport.Download = (progress, _) => { File.Copy(Path.Combine(feed, update.TargetFullRelease.FileName), Path.Combine(area, update.TargetFullRelease.FileName), true); progress(100); return Task.CompletedTask; };
+        await service.DownloadAsync(); assert(service.Ready && !service.Busy && transport.Applies == 0, "失败后重新下载成功，校验就绪仍不自动应用");
+        var downloads = transport.Downloads; await service.CheckAsync();
+        assert(service.Ready && transport.Downloads == downloads && transport.Applies == 0, "重复检查保持已经校验的就绪状态");
+        await service.ApplyAsync(false); assert(transport.Applies == 1, "仅显式应用更新调用重启接口（模拟重启）");
+        File.WriteAllBytes(Path.Combine(area, update.TargetFullRelease.FileName), [1]);
+        var rejected = false;
+        try { await service.ApplyAsync(false); } catch (InvalidDataException) { rejected = true; }
+        assert(rejected && transport.Applies == 1 && !service.Ready && service.Available, "重启前再次校验缓存，篡改不得应用且恢复重新下载入口");
+        var recovery = new UpdateRecovery(area); File.WriteAllText(Path.Combine(area, "settings.json"), "{}");
+        recovery.Prepare("2.3.1");
+        recovery.BeginLaunch(); assert(!recovery.HasIncompleteUpdate, "首次正常启动不误报更新失败"); recovery.BeginLaunch();
+        assert(new UpdateRecovery(area).HasIncompleteUpdate && File.Exists(Path.Combine(area, "before-update", "settings.json")), "首次启动未确认保留恢复标记和配置备份");
+        recovery.MarkHealthy("2.4.0"); assert(!recovery.HasIncompleteUpdate && File.Exists(Path.Combine(area, "last-healthy-version.json")), "界面健康启动清除恢复标记");
+    }
+
+    private sealed class FaultTransport(UpdateInfo update, string packages) : IUpdateTransport
+    {
+        public Func<Task<UpdateInfo?>> Check { get; set; } = () => Task.FromResult<UpdateInfo?>(update);
+        public Func<Action<int>, CancellationToken, Task> Download { get; set; } = (_, _) => Task.CompletedTask;
+        public VelopackAsset? Pending => null;
+        public string PackagesDirectory => packages;
+        public int Downloads { get; private set; }
+        public int Applies { get; private set; }
+        public Task<UpdateInfo?> CheckAsync() => Check();
+        public Task DownloadAsync(UpdateInfo value, Action<int> progress, CancellationToken cancellation) { Downloads++; return Download(progress, cancellation); }
+        public void Apply(VelopackAsset value, bool tray) => Applies++;
     }
 
     public static async Task ApplyFixture(string root, string feedPath, string resultPath)

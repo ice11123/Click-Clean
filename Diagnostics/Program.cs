@@ -10,6 +10,17 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--profile-runtime") { RuntimeProfile.Run(args[1]); return; }
+        if (args.Length == 2 && args[0] == "--profile-pointer") { RuntimeProfile.Run(args[1], true); return; }
+        if (args.Length == 2 && args[0] == "--read-environment") {
+            RunUpdateCheck(async () => {
+                using var reader = new AutomationEnvironmentReader(); var rows = new List<AutomationEnvironment>();
+                for (var i = 0; i < 3; i++) { rows.Add(reader.Read()); await Task.Delay(1000); }
+                var processes = new ProcessMemoryReader().Read();
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { Environment = rows, ProcessCount = processes.Samples.Count, Unavailable = processes.Unavailable, ReadOnly = true }, new JsonSerializerOptions { WriteIndented = true }));
+                if (rows.All(row => row.LowMemory is null) || rows.All(row => row.DiskBusy is null) || processes.Samples.Count == 0) throw new InvalidOperationException("真实只读探针未获得有效样本。");
+            }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
         if (args.Length == 2 && args[0] == "--system-check") { SystemCheck(args[1]); return; }
         if (args.Length == 2 && args[0] == "--memory-read") {
             RunUpdateCheck(() => {
@@ -32,11 +43,12 @@ public static class Program
         var openedLinks = new List<Uri>();
         var fakeUpdates = output is null ? null : new FakeApplicationUpdates();
         var fakeMemory = output is null ? null : new TrackingMemoryApi();
-        var window = new MainWindow(store, verification: true, memoryApi: fakeMemory, projectLinkOpener: output is null ? null : openedLinks.Add, updateOverride: fakeUpdates); app.MainWindow = window;
+        var environment = output is null ? null : new FakeEnvironment(); var processes = output is null ? null : new FakeProcesses();
+        var window = new MainWindow(store, verification: true, memoryApi: fakeMemory, projectLinkOpener: output is null ? null : openedLinks.Add, updateOverride: fakeUpdates, environmentOverride: environment, processOverride: processes); app.MainWindow = window;
         window.Loaded += async (_, _) => {
             window.ShowIsland();
             if (output is null) return;
-            try { await Capture(window, store, output, openedLinks, fakeUpdates!, fakeMemory!); app.Shutdown(); }
+            try { await Capture(window, store, output, openedLinks, fakeUpdates!, fakeMemory!, environment!, processes!); app.Shutdown(); }
             catch (Exception ex) { File.WriteAllText(Path.Combine(output, "failure.txt"), ex.ToString()); app.Shutdown(1); }
         };
         app.Run(window);
@@ -46,11 +58,16 @@ public static class Program
         try { action().GetAwaiter().GetResult(); }
         catch (Exception ex) { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(failurePath))!); File.WriteAllText(failurePath, ex.ToString()); Environment.ExitCode = 1; }
     }
-    private static async Task Capture(MainWindow window, Store store, string output, List<Uri> openedLinks, FakeApplicationUpdates update, TrackingMemoryApi memory)
+    private static async Task Capture(MainWindow window, Store store, string output, List<Uri> openedLinks, FakeApplicationUpdates update, TrackingMemoryApi memory, FakeEnvironment environment, FakeProcesses processes)
     {
         Directory.CreateDirectory(output); var checks = new List<string>();
         void Assert(bool value, string text) { if (!value) throw new InvalidOperationException(text); checks.Add(text); }
         var defaultWidth = window.Width; var defaultHeight = window.Height;
+        var refresh = typeof(MainWindow).GetMethod("RefreshMemory", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        memory.FailRead = true; refresh.Invoke(window, null);
+        Assert(((TextBlock)window.FindName("LoadText")).Text == "—" && ((TextBlock)window.FindName("AvailableText")).Text == "—", "实时读取失败清除旧数字，不冒充实时状态");
+        memory.FailRead = false; refresh.Invoke(window, null);
+        Assert(((TextBlock)window.FindName("LoadText")).Text != "—", "实时读取恢复后重新显示数字");
         Assert(update.Checks == 1 && update.Downloads == 0 && update.Applies == 0, "首页加载自动检查，但不自动下载或应用（模拟服务）");
         var lastCleanup = store.Settings.LastCleanupUtc; var oldCount = store.History.Count;
         memory.Available = 28UL << 30;
@@ -70,6 +87,13 @@ public static class Program
             ?? throw new InvalidOperationException("自动入口测试未找到实际执行方法。");
         Task InvokeAutomatic() => (Task)automaticRoutine.Invoke(window, new object[] { "阈值（模拟）", true })!;
         var automationPrivileges = memory.Privileges; var automationHistory = store.History.Count;
+        environment.State = new(Fullscreen: true); await InvokeAutomatic();
+        Assert(memory.Calls.Count == 0 && memory.Privileges == automationPrivileges, "实际自动入口全屏暂缓，不提权或调用整理");
+        environment.State = new(DiskBusy: true); await InvokeAutomatic();
+        Assert(memory.Calls.Count == 0 && memory.Privileges == automationPrivileges, "实际自动入口磁盘繁忙暂缓");
+        environment.State = new(DiskBusy: null); await InvokeAutomatic();
+        Assert(memory.Calls.Count == 0, "实际自动入口磁盘未知不误认空闲");
+        environment.State = new(LowMemory: false);
         store.Settings.AutomationNeedsConfirmation = true;
         await InvokeAutomatic();
         Assert(memory.Calls.Count == 0 && memory.Privileges == automationPrivileges && store.History.Count == automationHistory, "旧自动配置待确认时不执行三步或新增历史");
@@ -80,6 +104,14 @@ public static class Program
         memory.Available = (32UL << 30) * 450 / 1000;
         await InvokeAutomatic();
         Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()) && memory.Privileges == automationPrivileges + 1 && store.History.Count == automationHistory + 1, "自动入口达到55门槛按2/3/4执行，不再仅清待机");
+        await Task.Delay(250);
+        Assert(store.History[0].Sustained is not null && ((TextBlock)window.FindName("ResultDelta")).Text.StartsWith("复测可用"), "后台观测补充原记录，主结果优先使用3秒复测（模拟延时）");
+        store.Settings.Automation = store.Settings.Automation with { TriggerMode = AutomaticTriggerMode.SystemPressure };
+        memory.Calls.Clear(); environment.State = new(LowMemory: false); await InvokeAutomatic();
+        Assert(memory.Calls.Count == 0, "系统压力模式未收到低内存信号不自动整理");
+        environment.State = new(LowMemory: true); memory.Available = 28UL << 30; await InvokeAutomatic();
+        Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()), "系统低内存信号模式不错误套用55百分比门槛");
+        store.Settings.Automation = store.Settings.Automation with { TriggerMode = AutomaticTriggerMode.Percentage }; environment.State = new(LowMemory: false);
         memory.Calls.Clear(); memory.Available = 12UL << 30;
         var buttons = new[] { "RepositoryLinkButton", "BlogLinkButton", "AuthorLinkButton" }.Select(name => (Button)window.FindName(name)).ToArray();
         foreach (var button in buttons) button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -109,7 +141,10 @@ public static class Program
             Assert(label.Text.StartsWith("内存 ", StringComparison.Ordinal), "真实UI流程两秒后恢复实时内存，不需要额外点击");
             liveDock.PreviewReveal(false);
         }
-        window.ShowResult(new(DateTimeOffset.Now, before, before with { Available = 13UL << 30 }, [new(MemoryCommand.StandbyCache, 0, 0.1)], false, null, 0.1) { Trigger = "预览（模拟）" });
+        window.ShowResult(new(DateTimeOffset.Now, before, before with { Available = 13UL << 30 }, [new(MemoryCommand.StandbyCache, 0, 0.1)], false, null, 3.1) {
+            Trigger = "预览（模拟）", FollowUp = before with { Available = (12UL << 30) + (768UL << 20) }, FollowUpSeconds = 3,
+            Sustained = before with { Available = (12UL << 30) + (512UL << 20) }, SustainedSeconds = 30
+        });
         await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         foreach (var theme in new[] { "light", "dark" })
         {
@@ -166,11 +201,11 @@ public static class Program
                 Assert(baseColor == (theme == "light" ? "#FFFEF8F3" : "#FF000000"), "岛背景随浅深色主题切换：" + theme);
                 await Task.Delay(120); MainWindow.Capture(mini, Path.Combine(output, theme + "-mini.png")); mini.IsWorking = false;
             }
-            foreach (var section in new[] { "appearance", "automation", "updates", "about" })
+            foreach (var section in new[] { "appearance", "automation", "updates", "about", "diagnostics" })
             {
                 window.OpenSettings(); window.ShowSettingsSection(section);
                 await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-                var panelName = section switch { "appearance" => "AppearanceSection", "automation" => "AutomationSection", "updates" => "UpdatesSection", _ => "AboutSection" };
+                var panelName = section switch { "appearance" => "AppearanceSection", "automation" => "AutomationSection", "updates" => "UpdatesSection", "diagnostics" => "GrowthSection", _ => "AboutSection" };
                 Assert(Descendants((FrameworkElement)window.FindName(panelName)).OfType<TextBlock>().Where(text => text.FontSize >= 17).All(text => ((SolidColorBrush)text.Foreground).Color == ((SolidColorBrush)Application.Current.Resources["Text"]).Color), "设置区大标题实际前景色跟随主题：" + theme + "/" + section);
                 var selectedTab = Descendants((DependencyObject)window.FindName("SettingsPanel")).OfType<Button>().First(button => button.Tag as string == section);
                 Assert(((SolidColorBrush)selectedTab.Background).Color == ((SolidColorBrush)Application.Current.Resources["Tint"]).Color, "设置分段导航选中状态正确：" + theme + "/" + section);
@@ -191,6 +226,13 @@ public static class Program
                     Assert(store.Settings.Automation.ThresholdEnabled && store.Settings.Automation.ThresholdPercent == 55 && store.Settings.Automation.FullCleanup && !store.Settings.AutomationNeedsConfirmation, "界面可保存55并明确确认原版三步策略（预览不执行）：" + theme);
                     thresholdToggle.IsChecked = false; saveAutomatic.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Assert(!store.Settings.Automation.ThresholdEnabled && !store.Settings.Automation.TimerEnabled, "关闭自动规则并保存后恢复停用：" + theme);
+                }
+                if (section == "diagnostics") {
+                    await Task.Delay(50);
+                    Assert(((StackPanel)window.FindName("GrowthItems")).Children.Count > 0 && processes.Calls > 0, "诊断页面按需读取进程排行（模拟数据）");
+                    window.CloseOverlay(); await Task.Delay(50); var stoppedCalls = processes.Calls;
+                    await Task.Delay(100); Assert(processes.Calls == stoppedCalls, "关闭诊断页面停止进程扫描");
+                    window.OpenSettings(); window.ShowSettingsSection("diagnostics"); await Task.Delay(50);
                 }
                 foreach (var scale in new[] { 1d, 1.25, 1.5, 1.75, 2d }) window.RenderTo(Path.Combine(output, $"{theme}-{section}-{scale * 100:0}.png"), scale);
             }

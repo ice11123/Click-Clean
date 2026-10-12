@@ -8,10 +8,11 @@ public sealed class DockStatus(TimeProvider? timeProvider = null)
     private readonly TimeProvider time = timeProvider ?? TimeProvider.System;
     private long resultStarted;
     private string? operation, result;
+    private MemoryPressureBand pressure;
     public MemorySnapshot? Memory { get; private set; }
     public static MemoryPressureBand Band(double? load) => load is null || !double.IsFinite(load.Value) || load < 0 || load > 100
         ? MemoryPressureBand.Unknown : load < 60 ? MemoryPressureBand.Low : load < 85 ? MemoryPressureBand.Moderate : MemoryPressureBand.High;
-    public MemoryPressureBand Pressure => Band(Memory is { Total: > 0 } value ? value.Load : null);
+    public MemoryPressureBand Pressure => pressure;
     public TimeSpan ResultRemaining {
         get {
             if (result is null) return TimeSpan.Zero;
@@ -21,7 +22,17 @@ public sealed class DockStatus(TimeProvider? timeProvider = null)
     }
     public string Text => operation ?? (ResultRemaining > TimeSpan.Zero ? result! :
         Pressure == MemoryPressureBand.Unknown ? "内存 —" : $"内存 {Memory!.Load:0}%");
-    public void SetMemory(MemorySnapshot? snapshot) => Memory = snapshot is { Total: > 0 } && snapshot.Available <= snapshot.Total ? snapshot : null;
+    public void SetMemory(MemorySnapshot? snapshot)
+    {
+        Memory = snapshot is { Total: > 0 } && snapshot.Available <= snapshot.Total ? snapshot : null;
+        var load = Memory?.Load;
+        var next = Band(load);
+        // 2个百分点迟滞只影响呼吸灯分档，不更改占用数字或自动阈值。
+        if (load is not null && pressure == MemoryPressureBand.Low && load < 62) next = MemoryPressureBand.Low;
+        if (load is not null && pressure == MemoryPressureBand.Moderate && load >= 58 && load < 87) next = MemoryPressureBand.Moderate;
+        if (load is not null && pressure == MemoryPressureBand.High && load >= 83) next = MemoryPressureBand.High;
+        pressure = next;
+    }
     public void SetOperation(string text) { operation = text; result = null; }
     public void SetResult(string text) { operation = null; result = text; resultStarted = time.GetTimestamp(); }
     public void SetIdle() { operation = result = null; }

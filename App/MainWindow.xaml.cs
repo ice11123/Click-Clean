@@ -19,6 +19,17 @@ public partial class MainWindow : Window
     private readonly IApplicationUpdates updates;
     private readonly bool simulatedUpdates;
     private readonly Action<Uri> projectLinkOpener;
+    private readonly IAutomationEnvironmentReader? environmentReader;
+    private readonly IProcessMemoryReader processReader;
+    private readonly ProcessGrowthTracker growthTracker = new();
+    private AutomationEnvironment environmentState = new();
+    private double lastEnvironmentRead = -10, lastGrowthRead = -10;
+    private int growthGeneration;
+    private bool growthReading, growthActive, memoryReadFailed;
+    private DateTimeOffset growthStarted;
+    private CancellationTokenSource? longObservation;
+    private CleanupResult? latestResult;
+    private readonly UpdateRecovery recovery;
     private readonly Stopwatch uptime = Stopwatch.StartNew(), operationClock = new();
     private CancellationTokenSource? cancellation;
     private System.Windows.Forms.NotifyIcon? tray;
@@ -37,13 +48,17 @@ public partial class MainWindow : Window
     public MiniIsland? DesktopIsland => mini;
     public bool NativeThemeApplied { get; private set; }
 
-    public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null, Action<Uri>? projectLinkOpener = null, IApplicationUpdates? updateOverride = null)
+    public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null, Action<Uri>? projectLinkOpener = null, IApplicationUpdates? updateOverride = null,
+        IAutomationEnvironmentReader? environmentOverride = null, IProcessMemoryReader? processOverride = null)
     {
         this.store = store; preview = verification;
         this.projectLinkOpener = projectLinkOpener ?? (uri => OpenExternal(uri.AbsoluteUri));
         updates = updateOverride ?? new UpdateService(Path.Combine(store.Root, "update-state.json"));
         simulatedUpdates = verification && updateOverride is not null;
         memory = memoryApi ?? (verification ? new PreviewMemoryApi() : new WindowsMemoryApi());
+        environmentReader = environmentOverride ?? (verification ? null : new AutomationEnvironmentReader());
+        processReader = processOverride ?? new ProcessMemoryReader();
+        recovery = new UpdateRecovery(store.Root);
         engine = new MemoryEngine(memory);
         InitializeComponent(); ApplyTheme();
         SourceInitialized += (_, _) => ApplyTheme();
@@ -69,6 +84,12 @@ public partial class MainWindow : Window
         automation.Configure(store.Settings.Automation, recent);
         updates.Changed += UpdateChanged;
         Loaded += async (_, _) => { if (store.Settings.CheckUpdates && (!preview || simulatedUpdates)) await CheckUpdates(); };
+        Loaded += (_, _) => {
+            if (!preview) {
+                RecoveryBanner.Visibility = recovery.HasIncompleteUpdate ? Visibility.Visible : Visibility.Collapsed;
+                Dispatcher.BeginInvoke(() => recovery.MarkHealthy(BuildInfo.Version), DispatcherPriority.ApplicationIdle);
+            }
+        };
         if (!preview)
         {
             var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -82,20 +103,21 @@ public partial class MainWindow : Window
             tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMain);
             TryRefreshStartup();
         }
-        if (store.History.FirstOrDefault() is { } recentResult) ShowResult(recentResult, false);
+        if (store.History.FirstOrDefault() is { } recentResult) ShowResult(recentResult, false, true);
         RefreshMemory(); RefreshAutomationSummary();
         if (store.Settings.MiniIsland) ShowIsland();
         timer.Start();
     }
 
-    private Task Tick()
+    private async Task Tick()
     {
-        if (tickRunning || exiting || applying) return Task.CompletedTask;
+        if (tickRunning || exiting || applying) return;
         tickRunning = true;
         try
         {
             if (uptime.Elapsed.TotalSeconds - lastThemeCheck >= 30) { ApplyTheme(); lastThemeCheck = uptime.Elapsed.TotalSeconds; }
             var snapshot = RefreshMemory();
+            if (growthActive && !growthReading && IsVisible && uptime.Elapsed.TotalSeconds - lastGrowthRead >= 5) _ = RefreshGrowth();
             if (IsBusy && operationClock.Elapsed.TotalSeconds >= 60)
             {
                 StatusText.Text = $"{currentStep}耗时较长，仍在等待系统返回；可取消后续步骤。";
@@ -103,7 +125,15 @@ public partial class MainWindow : Window
             }
             if (!preview)
             {
-                var trigger = automation.Evaluate(snapshot?.Load, IsBusy || applying || updates.Busy || store.Settings.AutomationNeedsConfirmation);
+                var enabled = store.Settings.Automation.ThresholdEnabled || store.Settings.Automation.TimerEnabled;
+                if (enabled && !store.Settings.AutomationNeedsConfirmation && environmentReader is not null && uptime.Elapsed.TotalSeconds - lastEnvironmentRead >= 5)
+                {
+                    lastEnvironmentRead = uptime.Elapsed.TotalSeconds;
+                    try { environmentState = await Task.Run(environmentReader.Read); }
+                    catch (Exception ex) { environmentState = new(DiskBusy: null); store.Log("自动避让读数失败：" + ex.Message); }
+                    if (exiting || applying) return;
+                }
+                var trigger = automation.Evaluate(snapshot?.Load, IsBusy || applying || updates.Busy || store.Settings.AutomationNeedsConfirmation, environmentState);
                 if (trigger is not null)
                     _ = RoutineCleanup(trigger, true);
                 if (store.Settings.CheckUpdates && uptime.Elapsed.TotalSeconds >= nextUpdateCheck)
@@ -115,7 +145,6 @@ public partial class MainWindow : Window
             RefreshAutomationSummary();
         }
         finally { tickRunning = false; }
-        return Task.CompletedTask;
     }
     public void ShowMain() { Show(); WindowState = WindowState.Normal; Activate(); }
     private MemorySnapshot? RefreshMemory()
@@ -123,14 +152,26 @@ public partial class MainWindow : Window
         try
         {
             var snapshot = memory.Read();
+            if (snapshot.Total == 0 || snapshot.Total > long.MaxValue || snapshot.Available > snapshot.Total || snapshot.Commit > long.MaxValue)
+                throw new InvalidDataException("系统内存读数无效。");
             dockStatus.SetMemory(snapshot); mini?.RefreshStatus();
             LoadText.Text = snapshot.Load.ToString("0"); MemoryBar.Value = snapshot.Load;
+            MemoryBar.Opacity = 1;
             UsedText.Text = Labels.Bytes(snapshot.Used); AvailableText.Text = Labels.Bytes(snapshot.Available);
             TotalText.Text = Labels.Bytes(snapshot.Total); CommitText.Text = $"{Labels.Bytes(snapshot.Commit)} / {Labels.Bytes(snapshot.CommitLimit)}";
             if (tray is not null) tray.Text = $"Click-Clean · {snapshot.Load:0}% · 可用 {Labels.Bytes(snapshot.Available)}";
+            if (memoryReadFailed && !IsBusy) StatusText.Text = "实时内存读数已恢复。";
+            memoryReadFailed = false;
             return snapshot;
         }
-        catch (Exception ex) { dockStatus.SetMemory(null); mini?.RefreshStatus(); StatusText.Text = "内存读取失败：" + ex.Message; store.Log(ex.ToString()); return null; }
+        catch (Exception ex) {
+            dockStatus.SetMemory(null); mini?.RefreshStatus();
+            LoadText.Text = UsedText.Text = AvailableText.Text = TotalText.Text = CommitText.Text = "—";
+            MemoryBar.Value = 0; MemoryBar.Opacity = 0.35;
+            if (tray is not null) tray.Text = "Click-Clean · 内存读数暂不可用";
+            if (!IsBusy) StatusText.Text = "内存读数暂不可用：" + ex.Message;
+            if (!memoryReadFailed) store.Log(ex.ToString()); memoryReadFailed = true; return null;
+        }
     }
     public void ApplyTheme(string? overrideTheme = null)
     {
@@ -172,9 +213,22 @@ public partial class MainWindow : Window
     {
         if (IsBusy || applying) return;
         if (automatic && store.Settings.AutomationNeedsConfirmation) return;
+        if (automatic)
+        {
+            if (preview && environmentReader is not null) environmentState = await Task.Run(environmentReader.Read);
+            environmentState = environmentState with { Fullscreen = preview ? environmentState.Fullscreen : ForegroundActivity.IsFullscreen() };
+            if (IsBusy || applying || exiting) return;
+            var a = store.Settings.Automation;
+            var deferred = a.PauseFullscreen && environmentState.Fullscreen ? "全屏应用正在使用" :
+                a.PauseDiskBusy && environmentState.DiskBusy != false ? "磁盘繁忙或状态暂不可用" : null;
+            if (deferred is not null) { automation.DeferAttempt(trigger.Contains("定时", StringComparison.Ordinal), deferred); RefreshAutomationSummary(); return; }
+        }
         MemorySnapshot? snapshot = null;
         try { snapshot = memory.Read(); } catch (Exception ex) { store.Log("压力检查失败：" + ex.Message); }
-        var plan = RoutineCleanupPolicy.Evaluate(snapshot, store.Settings.Automation.ThresholdPercent, automatic);
+        var systemMode = store.Settings.Automation.TriggerMode == AutomaticTriggerMode.SystemPressure;
+        var plan = automatic && systemMode && environmentState.LowMemory != true
+            ? new RoutineCleanupPlan([], "系统未报告低内存，未执行自动整理。")
+            : RoutineCleanupPolicy.Evaluate(snapshot, store.Settings.Automation.ThresholdPercent, automatic && !systemMode);
         StatusText.Text = plan.Message;
         if (plan.Skipped)
         {
@@ -203,6 +257,7 @@ public partial class MainWindow : Window
     {
         if (IsBusy || applying) { StatusText.Text = "当前操作尚未结束，请稍等。"; return; }
         var selected = commands.Distinct().OrderBy(c => (int)c).ToArray();
+        StopLongObservation("新整理已开始，旧持续观测停止。");
         cancellation = new();
         activeAutomatic = automatic;
         CleanButton.IsEnabled = CustomButton.IsEnabled = Options.IsEnabled = false;
@@ -228,6 +283,7 @@ public partial class MainWindow : Window
             success = result.Success; ShowResult(result);
             StatusText.Text = result.Success ? result.ObservationError ?? "步骤已完成；前后变化含系统其他活动，不证明性能提升。" : result.Error ?? "已取消尚未开始的步骤。";
             try { store.Add(result); } catch (Exception ex) { StatusText.Text += " 记录保存失败：" + ex.Message; }
+            if (result.Steps.Count > 0 && !result.Cancelled) BeginLongObservation(result);
         }
         catch (Exception ex)
         {
@@ -254,24 +310,53 @@ public partial class MainWindow : Window
         StatusText.Text = observingMemory ? "已请求结束复测，保留已经执行的步骤与即时观测。" : "已请求取消；等待当前系统调用返回后停止。";
         SetDockOperation(observingMemory ? "结束复测…" : "取消后续 · 等待返回");
     }
-    public void ShowResult(CleanupResult result, bool showDock = true)
+    public void ShowResult(CleanupResult result, bool showDock = true, bool historical = false)
     {
         ResultCard.Visibility = Visibility.Visible;
         ResultTitle.Text = result.Success ? "步骤完成" : result.Steps.Any(s => s.Success) ? "部分完成" : result.Cancelled ? "已取消" : "整理失败";
-        if (!showDock) ResultTitle.Text = "上次 · " + ResultTitle.Text;
-        ResultDelta.Text = "可用内存 " + Labels.Delta(result.AvailableChange);
+        latestResult = result;
+        if (historical) ResultTitle.Text = "上次 · " + ResultTitle.Text;
+        ResultDelta.Text = (result.FollowUp is null ? "即时可用 " : "复测可用 ") + Labels.Delta(result.PreferredChange);
+        ResultObservationText.Text = result.Sustained is not null ? $"{result.SustainedSeconds:0} 秒持续观测 {Labels.Delta(result.SustainedChange)}" :
+            result.SustainedError is not null ? "持续观测：" + result.SustainedError : longObservation is not null ? "30 秒持续观测中，可继续使用软件" : "持续观测：无记录";
         ResultMeta.Text = $"{result.Time:MM-dd HH:mm} · {result.Seconds:0.0}s";
         ResultError.Text = result.Error ?? result.ObservationError ?? (result.Cancelled ? "已停止尚未开始的步骤。" : "观测变化不代表性能提升。");
         ResultDetails.Text = $"{result.Time:yyyy-MM-dd HH:mm:ss} · {result.Trigger}\n" + string.Join("\n", result.Steps.Select(s => $"{(s.Success ? "✓" : "!")} {Labels.Name(s.Command)} · {s.Seconds:0.00}s · {s.StatusHex}")) +
             $"\n即时可用变化：{Labels.Delta(result.AvailableChange)}\n即时提交变化：{Labels.Delta(result.CommitChange)}\n" +
             (result.FollowUp is null ? "复测：未完成 / 无记录" : $"即时采样后 {result.FollowUpSeconds:0.00}s 复测变化：{Labels.Delta(result.FollowUpChange)}") +
+            (result.Sustained is null ? "" : $"\n持续观测 {result.SustainedSeconds:0.0}s 可用变化：{Labels.Delta(result.SustainedChange)}") +
             $"\n整理前提交：{Labels.Bytes(result.Before.Commit)} / {Labels.Bytes(result.Before.CommitLimit)}" +
             (result.Before.SystemCache is { } cache ? $"\n整理前系统缓存（含系统工作集，不是纯待机）：{Labels.Bytes(cache)}" : "") +
             (result.ObservationError is null ? "" : "\n" + result.ObservationError);
         if (showDock) {
             var title = result.Success ? "完成" : result.Cancelled ? "已取消" : result.Steps.Any(s => s.Success) ? "部分完成" : "失败";
-            dockStatus.SetResult(title + " · " + (result.AvailableChange is null ? "变化未知" : Labels.Delta(result.AvailableChange)));
+            dockStatus.SetResult(title + " · " + (result.PreferredChange is null ? "变化未知" : (result.FollowUp is null ? "即时 " : "复测 ") + Labels.Delta(result.PreferredChange)));
             mini?.RefreshStatus();
+        }
+    }
+    private async void BeginLongObservation(CleanupResult result)
+    {
+        var token = new CancellationTokenSource(); longObservation = token;
+        ResultObservationText.Text = "30 秒持续观测中，可继续使用软件";
+        try {
+            var delay = preview ? TimeSpan.FromMilliseconds(200) : TimeSpan.FromSeconds(Math.Max(0, 30 - (result.FollowUpSeconds ?? 0)));
+            var observed = await MemoryObservations.ObserveAsync(result, memory, delay, token.Token);
+            if (!token.IsCancellationRequested && !exiting && ReferenceEquals(longObservation, token)) {
+                store.ReplaceObservation(observed);
+                if (latestResult?.Id == result.Id) ShowResult(observed, false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { store.Log("持续观测记录失败：" + ex.Message); }
+        finally { if (ReferenceEquals(longObservation, token)) longObservation = null; token.Dispose(); }
+    }
+    private void StopLongObservation(string? reason = null)
+    {
+        longObservation?.Cancel(); longObservation = null;
+        if (reason is not null && latestResult is { Sustained: null, SustainedError: null } value) {
+            var stopped = value with { SustainedError = reason };
+            try { store.ReplaceObservation(stopped); } catch (Exception ex) { store.Log("保存观测停止状态失败：" + ex.Message); }
+            latestResult = stopped;
         }
     }
     public void SetDockOperation(string text)
@@ -307,6 +392,8 @@ public partial class MainWindow : Window
             UpdateCheck.IsChecked = store.Settings.CheckUpdates; DownloadCheck.IsChecked = false;
             ApplyHiddenCheck.IsChecked = false;
             var a = store.Settings.Automation; ThresholdCheck.IsChecked = a.ThresholdEnabled; TimerCheck.IsChecked = a.TimerEnabled;
+            TriggerModeCombo.SelectedIndex = a.TriggerMode == AutomaticTriggerMode.SystemPressure ? 1 : 0;
+            PauseFullscreenCheck.IsChecked = a.PauseFullscreen; PauseDiskCheck.IsChecked = a.PauseDiskBusy;
             ThresholdInput.Text = a.ThresholdPercent.ToString(); SustainInput.Text = a.SustainSeconds.ToString();
             CooldownInput.Text = a.CooldownMinutes.ToString(); IntervalInput.Text = a.IntervalMinutes.ToString(); FullAutoCheck.IsChecked = a.FullCleanup;
             FullAutoCheck.IsEnabled = false;
@@ -322,6 +409,9 @@ public partial class MainWindow : Window
         AutomationSection.Visibility = section == "automation" ? Visibility.Visible : Visibility.Collapsed;
         UpdatesSection.Visibility = section == "updates" ? Visibility.Visible : Visibility.Collapsed;
         AboutSection.Visibility = section == "about" ? Visibility.Visible : Visibility.Collapsed;
+        GrowthSection.Visibility = section == "diagnostics" ? Visibility.Visible : Visibility.Collapsed;
+        growthGeneration++; growthActive = section == "diagnostics";
+        if (growthActive) { growthTracker.Reset(); growthStarted = DateTimeOffset.Now; lastGrowthRead = -10; _ = RefreshGrowth(); }
     }
     private void History_Click(object sender, RoutedEventArgs e) => OpenHistory(lastInputWasPointer);
     public void OpenHistory(bool animate = false)
@@ -342,12 +432,13 @@ public partial class MainWindow : Window
         var outcome = new TextBlock { Text = item.Success ? "完成" : item.Cancelled ? "取消" : item.Steps.Any(step => step.Success) ? "部分完成" : "失败", FontSize = 11 };
         var badge = new Border { Child = outcome, CornerRadius = new CornerRadius(7), Padding = new Thickness(8, 4, 8, 4) };
         badge.SetResourceReference(Border.BackgroundProperty, "Tint"); Grid.SetColumn(badge, 1); header.Children.Add(badge); panel.Children.Add(header);
-        panel.Children.Add(new TextBlock { Text = "可用内存 " + Labels.Delta(item.AvailableChange), FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 5), TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = (item.FollowUp is null ? "即时可用 " : "复测可用 ") + Labels.Delta(item.PreferredChange), FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 5), TextWrapping = TextWrapping.Wrap });
         var meta = new TextBlock { Text = $"{item.Trigger} · {item.Seconds:0.0}s · {item.Steps.Count} 个已执行步骤", FontSize = 11, TextWrapping = TextWrapping.Wrap };
         meta.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); panel.Children.Add(meta);
         var detail = new TextBlock { Text = string.Join("\n", item.Steps.Select(step => $"{Labels.Name(step.Command)} · {step.Seconds:0.00}s · {step.StatusHex}")) +
             $"\n即时提交变化：{Labels.Delta(item.CommitChange)}\n" +
             (item.FollowUp is null ? "复测：无记录 / 未完成" : $"即时采样后 {item.FollowUpSeconds:0.00}s 复测可用变化：{Labels.Delta(item.FollowUpChange)}") +
+            (item.Sustained is null ? "\n持续观测：" + (item.SustainedError ?? "无记录") : $"\n持续观测 {item.SustainedSeconds:0.0}s：{Labels.Delta(item.SustainedChange)}") +
             (item.Error is null ? "" : "\n" + item.Error) + (item.ObservationError is null ? "" : "\n" + item.ObservationError), TextWrapping = TextWrapping.Wrap, FontSize = 11, Margin = new Thickness(0, 8, 0, 0) };
         detail.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         var expander = new Expander { Header = "查看步骤与返回码", Content = detail, Margin = new Thickness(0, 10, 0, 0) };
@@ -359,6 +450,7 @@ public partial class MainWindow : Window
     private void CloseOverlay_Click(object sender, RoutedEventArgs e) => CloseOverlay();
     public void CloseOverlay()
     {
+        growthActive = false; growthGeneration++;
         if (Overlay.Visibility != Visibility.Visible) return;
         Overlay.Visibility = Visibility.Collapsed; Header.IsEnabled = MainContent.IsEnabled = Footer.IsEnabled = true;
         if (overlayReturnFocus is UIElement target && target.IsVisible && target.IsEnabled) target.Focus(); else SettingsButton.Focus();
@@ -409,10 +501,13 @@ public partial class MainWindow : Window
             !ReadNumber(IntervalInput, 15, 1440, out var interval) || !ReadNumber(CooldownInput, 5, 240, out var cooldown))
         { AutomationFeedback.Text = "请输入标注范围内的整数；设置尚未改变。"; return; }
         var next = new AutomationSettings { ThresholdEnabled = ThresholdCheck.IsChecked == true, TimerEnabled = TimerCheck.IsChecked == true,
-            ThresholdPercent = threshold, SustainSeconds = sustain, IntervalMinutes = interval, CooldownMinutes = cooldown, FullCleanup = true };
+            ThresholdPercent = threshold, SustainSeconds = sustain, IntervalMinutes = interval, CooldownMinutes = cooldown, FullCleanup = true,
+            TriggerMode = TriggerModeCombo.SelectedIndex == 1 ? AutomaticTriggerMode.SystemPressure : AutomaticTriggerMode.Percentage,
+            PauseFullscreen = PauseFullscreenCheck.IsChecked == true, PauseDiskBusy = PauseDiskCheck.IsChecked == true };
         if ((next.ThresholdEnabled || next.TimerEnabled) && !preview)
         {
-            if (MessageBox.Show(this, $"自动模式在达到 {threshold}% 占用门槛时执行原版三步：裁剪全系统工作集、刷新修改页、清理待机缓存。\n\n这可能造成缺页、短暂卡顿和磁盘忙碌，不保证提速。55% 在正常使用中也可能经常达到；冷却 {cooldown} 分钟。确认保存并启用所选自动规则？", "确认自动三步整理", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            var gate = next.TriggerMode == AutomaticTriggerMode.SystemPressure ? "Windows 报告低内存" : $"达到 {threshold}% 占用门槛";
+            if (MessageBox.Show(this, $"自动模式在{gate}时执行原版三步：裁剪全系统工作集、刷新修改页、清理待机缓存。\n\n这可能造成缺页、短暂卡顿和磁盘忙碌，不保证提速。冷却 {cooldown} 分钟。确认保存并启用所选自动规则？", "确认自动三步整理", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         }
         store.Settings.Automation = next;
         store.Settings.AutomationNeedsConfirmation = false;
@@ -428,8 +523,11 @@ public partial class MainWindow : Window
         if (store.Settings.AutomationNeedsConfirmation && (a.ThresholdEnabled || a.TimerEnabled) && !IsBusy)
             StatusText.Text = "旧自动配置已暂停：本版恢复原版三步，请在设置中核对阈值并确认保存。";
         AutomationSummary.Text = store.Settings.AutomationNeedsConfirmation ? "自动规则变更待确认；已有阈值和开关保留，尚未恢复执行。" : automation.Paused ? "自动清理已暂停：连续失败 3 次，请在设置中恢复。" :
-            $"阈值：{(a.ThresholdEnabled ? a.ThresholdPercent + "% / " + a.SustainSeconds + "秒" : "关闭")}    定时：{(a.TimerEnabled ? a.IntervalMinutes + "分钟" : "关闭")}";
+            $"触发：{(a.ThresholdEnabled ? (a.TriggerMode == AutomaticTriggerMode.SystemPressure ? "系统低内存" : a.ThresholdPercent + "%") + " / " + a.SustainSeconds + "秒" : "关闭")}    定时：{(a.TimerEnabled ? a.IntervalMinutes + "分钟" : "关闭")}";
         if (a.TimerEnabled && automation.TimerRemaining is { } remaining && !automation.Paused && !store.Settings.AutomationNeedsConfirmation) AutomationSummary.Text += $"\n下一周期约 {Math.Ceiling(remaining.TotalMinutes):0} 分钟后；冷却 {a.CooldownMinutes} 分钟。";
+        AutoStatusText.Text = store.Settings.AutomationNeedsConfirmation ? "自动规则待确认" : automation.Paused ? "自动整理已暂停 · 连续失败" :
+            automation.DeferredReason is { } reason ? "自动整理暂缓 · " + reason + $"；约 {timer.Interval.TotalSeconds:0} 秒后重新评估" : "";
+        AutoStatusText.Visibility = string.IsNullOrEmpty(AutoStatusText.Text) ? Visibility.Collapsed : Visibility.Visible;
     }
     private void Island_Click(object sender, RoutedEventArgs e) => ToggleIsland();
     private void ToggleIsland()
@@ -461,6 +559,7 @@ public partial class MainWindow : Window
         if (applying || preview && !simulatedUpdates) return;
         await updates.DownloadAsync();
     }
+    private void CancelUpdate_Click(object sender, RoutedEventArgs e) => updates.Cancel();
     private async void HomeUpdate_Click(object sender, RoutedEventArgs e)
     {
         if (applying || updates.Busy || preview && !simulatedUpdates) return;
@@ -472,6 +571,11 @@ public partial class MainWindow : Window
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(UpdateChanged); return; }
         UpdateFeedback.Text = updates.Status; CheckUpdateButton.IsEnabled = !updates.Busy;
+        CancelUpdateButton.Visibility = updates.Busy ? Visibility.Visible : Visibility.Collapsed;
+        HomeCancelUpdate.Visibility = updates.Busy ? Visibility.Visible : Visibility.Collapsed;
+        HomeUpdateProgress.Visibility = updates.Busy && updates.Phase == UpdatePhase.Downloading ? Visibility.Visible : Visibility.Collapsed;
+        HomeUpdateProgress.IsIndeterminate = updates.Progress is null;
+        HomeUpdateProgress.Value = updates.Progress ?? 0;
         DownloadUpdateButton.Visibility = updates.Available && !updates.Ready ? Visibility.Visible : Visibility.Collapsed;
         DownloadUpdateButton.IsEnabled = !updates.Busy;
         ApplyUpdateButton.Visibility = updates.Ready ? Visibility.Visible : Visibility.Collapsed;
@@ -487,12 +591,15 @@ public partial class MainWindow : Window
         if (preview && !simulatedUpdates || IsBusy || applying || updates.Busy || !updates.Ready) return;
         applying = true; timer.Stop(); SaveSettings();
         try {
+            StopLongObservation("准备重启更新，持续观测停止。");
+            if (!preview) recovery.Prepare(BuildInfo.Version);
             await updates.ApplyAsync(!IsVisible);
             // 模拟更新不会退出进程；保证诊断不会留下停掉的采样计时器。
             if (simulatedUpdates) { applying = false; timer.Start(); UpdateChanged(); }
         }
         catch (Exception ex)
         {
+            if (!preview) recovery.CancelAttempt();
             applying = false; UpdateFeedback.Text = HomeUpdateText.Text = "更新应用失败，现有版本保留：" + ex.Message;
             HomeUpdateBanner.Visibility = Visibility.Visible;
             store.Log(ex.ToString()); timer.Start(); ShowMain();
@@ -515,7 +622,7 @@ public partial class MainWindow : Window
     private void ClearHistory_Click(object sender, RoutedEventArgs e)
     {
         if (MessageBox.Show(this, "清空本地整理记录？", "清空记录", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
-        try { store.Clear(); ResultCard.Visibility = Visibility.Collapsed; OpenHistory(); } catch (Exception ex) { MessageBox.Show(this, ex.Message); }
+        try { StopLongObservation(); latestResult = null; store.Clear(); ResultCard.Visibility = Visibility.Collapsed; OpenHistory(); } catch (Exception ex) { MessageBox.Show(this, ex.Message); }
     }
     private void Export_Click(object sender, RoutedEventArgs e)
     {
@@ -550,9 +657,37 @@ public partial class MainWindow : Window
     }
     public void DisposeResources()
     {
+        growthActive = false; growthGeneration++; StopLongObservation(); environmentReader?.Dispose();
         timer.Stop(); updates.Dispose(); mini?.Close(); mini = null;
         if (tray is not null) { var icon = tray.Icon; tray.Visible = false; tray.Dispose(); icon?.Dispose(); tray = null; }
     }
+    private void Growth_Click(object sender, RoutedEventArgs e) { OpenSettings(lastInputWasPointer); ShowSettingsSection("diagnostics"); }
+    private async void RefreshGrowth_Click(object sender, RoutedEventArgs e) => await RefreshGrowth();
+    private async Task RefreshGrowth()
+    {
+        if (!growthActive || growthReading || exiting || !IsVisible) return;
+        growthReading = true; lastGrowthRead = uptime.Elapsed.TotalSeconds;
+        var generation = growthGeneration;
+        try {
+            var batch = await Task.Run(processReader.Read);
+            if (!growthActive || generation != growthGeneration || exiting) return;
+            var rows = growthTracker.Compare(batch.Samples);
+            GrowthItems.Children.Clear();
+            foreach (var row in rows) {
+                var grid = new Grid { Margin = new Thickness(0, 5, 0, 5) };
+                grid.ColumnDefinitions.Add(new()); grid.ColumnDefinitions.Add(new() { Width = new GridLength(90) }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(85) });
+                var name = new TextBlock { Text = row.Current.Name, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = $"PID {row.Current.Id}" };
+                var size = new TextBlock { Text = $"{row.Current.PrivateBytes / 1048576d:0.0} MiB", HorizontalAlignment = HorizontalAlignment.Right, FontSize = 11 };
+                var change = new TextBlock { Text = row.PrivateGrowth is null ? "新 / 基线" : $"{(row.PrivateGrowth >= 0 ? "+" : "−")}{Math.Abs((double)row.PrivateGrowth) / 1048576d:0.0} MiB", HorizontalAlignment = HorizontalAlignment.Right, FontSize = 11 };
+                grid.Children.Add(name); Grid.SetColumn(size, 1); grid.Children.Add(size); Grid.SetColumn(change, 2); grid.Children.Add(change);
+                GrowthItems.Children.Add(grid);
+            }
+            GrowthFeedback.Text = $"本次观察 {(DateTimeOffset.Now - growthStarted).TotalSeconds:0} 秒 · 读取 {batch.Samples.Count} 个进程 · {batch.Unavailable} 个暂不可读\n私有内存增长不等于泄漏；关闭此页停止扫描。";
+        }
+        catch (Exception ex) { if (generation == growthGeneration) GrowthFeedback.Text = "进程读数暂不可用：" + ex.Message; }
+        finally { growthReading = false; }
+    }
+    private void Recovery_Click(object sender, RoutedEventArgs e) => OpenExternal(BuildInfo.Repository.TrimEnd('/') + "/releases");
     private Button? pressedButton;
     private void AnimatePress(object sender, MouseButtonEventArgs e)
     {

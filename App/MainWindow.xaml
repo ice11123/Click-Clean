@@ -1,5 +1,5 @@
 <Window x:Class="ClickClean.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:ClickClean"
-        Title="Click-Clean 即清" Width="560" Height="620" MinWidth="440" MinHeight="560" WindowStartupLocation="CenterScreen"
+        Title="Click-Clean 即清" Width="560" Height="580" MinWidth="440" MinHeight="540" WindowStartupLocation="CenterScreen"
         Icon="pack://application:,,,/ClickClean;component/Assets/ClickClean.png"
         Background="{DynamicResource Bg}" FontFamily="Segoe UI, Microsoft YaHei UI" UseLayoutRounding="True" SnapsToDevicePixels="True">
   <Window.Resources>
@@ -53,19 +53,23 @@
         <StackPanel><TextBlock Text="Click-Clean" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="即清 · 内存工具" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,2,0,0"/></StackPanel>
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+        <Button Content="诊断" Click="Growth_Click" Margin="0,0,4,0" Padding="10,6" Background="Transparent" BorderBrush="Transparent" ToolTip="按需查看内存增长排行"/>
         <Button x:Name="HistoryButton" Content="历史" Click="History_Click" Margin="0,0,4,0" Padding="10,6" Background="Transparent" BorderBrush="Transparent" AutomationProperties.Name="查看整理历史" ToolTip="查看最近 30 次整理记录"/>
         <Button x:Name="SettingsButton" Content="设置" Click="Settings_Click" Padding="10,6" Background="Transparent" BorderBrush="Transparent" AutomationProperties.Name="打开设置" ToolTip="外观、自动清理、更新与关于"/>
       </StackPanel>
     </Grid>
     <ScrollViewer x:Name="MainContent" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" PanningMode="VerticalOnly">
       <StackPanel Margin="0,0,5,0">
-        <Border x:Name="HomeUpdateBanner" Visibility="Collapsed" Background="{DynamicResource Tint}" BorderBrush="{DynamicResource DetailAccent}" BorderThickness="3,0,0,0" Padding="10,8" Margin="0,0,0,16" AutomationProperties.LiveSetting="Polite">
-          <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBlock x:Name="HomeUpdateText" Text="发现新版本" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,10,0"/>
+        <Border x:Name="HomeUpdateBanner" Visibility="Collapsed" Background="{DynamicResource Tint}" BorderBrush="{DynamicResource DetailAccent}" BorderThickness="3,0,0,0" Padding="10,6" Margin="0,0,0,10" AutomationProperties.LiveSetting="Polite">
+          <Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="HomeUpdateText" Text="发现新版本" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" VerticalAlignment="Center" Margin="0,0,8,0"/>
             <Button x:Name="HomeUpdateButton" Grid.Column="1" Content="下载更新" Click="HomeUpdate_Click" Padding="10,5" MinHeight="30" Background="Transparent" BorderBrush="{DynamicResource Line}"/>
+            <Button x:Name="HomeCancelUpdate" Grid.Column="2" Content="取消" Click="CancelUpdate_Click" Padding="7,5" Visibility="Collapsed" Background="Transparent" BorderBrush="Transparent"/>
+            <ProgressBar x:Name="HomeUpdateProgress" Grid.Row="1" Grid.ColumnSpan="3" Height="3" Maximum="100" Visibility="Collapsed" Margin="0,5,0,0" AutomationProperties.Name="更新下载进度"/>
           </Grid>
         </Border>
-        <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,1" Padding="0,18,0,18">
+        <Border x:Name="RecoveryBanner" Visibility="Collapsed" Background="{DynamicResource Tint}" Padding="10,8" Margin="0,0,0,10"><StackPanel><TextBlock Text="上次更新未完成启动。可重试启动，或从发行历史安装旧版。" Style="{StaticResource Description}"/><Button Content="打开发行历史" Click="Recovery_Click" HorizontalAlignment="Left" Margin="0,6,0,0"/></StackPanel></Border>
+        <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,1" Padding="0,12,0,12">
           <StackPanel>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
               <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -94,14 +98,16 @@
             </Grid>
           </StackPanel>
         </Border>
-        <TextBlock x:Name="StatusText" Text="默认原版三步整理，手动点击不受阈值限制；可能短暂卡顿或磁盘忙碌。" Style="{StaticResource Description}" Margin="0,12,0,16"/>
-        <Border x:Name="ResultCard" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,16" Visibility="Collapsed" Margin="0,0,0,16">
+        <TextBlock x:Name="StatusText" Text="一键执行原版三步。整理后复测内存变化。" Style="{StaticResource Description}" Margin="0,10,0,12"/>
+        <TextBlock x:Name="AutoStatusText" Visibility="Collapsed" Style="{StaticResource Description}" Margin="0,0,0,10" AutomationProperties.LiveSetting="Polite"/>
+        <Border x:Name="ResultCard" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,12" Visibility="Collapsed" Margin="0,0,0,8">
           <StackPanel>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="ResultTitle" Text="最近结果" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="ResultMeta" Grid.Column="1" FontSize="10" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/></Grid>
             <Expander Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,7,0,0" AutomationProperties.Name="展开最近整理结果详情">
-              <Expander.Header><TextBlock x:Name="ResultDelta" FontSize="13" Typography.NumeralAlignment="Tabular"/></Expander.Header>
+              <Expander.Header><TextBlock x:Name="ResultDelta" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource Text}" Typography.NumeralAlignment="Tabular"/></Expander.Header>
               <StackPanel Margin="0,8,0,0"><TextBlock x:Name="ResultError" Style="{StaticResource Description}"/><TextBlock x:Name="ResultDetails" Style="{StaticResource Description}" Margin="0,6,0,0"/></StackPanel>
             </Expander>
+            <TextBlock x:Name="ResultObservationText" Style="{StaticResource Description}" FontSize="10" Margin="20,3,0,0"/>
           </StackPanel>
         </Border>
         <Expander x:Name="Options" Header="高级手动整理" Foreground="{DynamicResource Text}" FontSize="12">
@@ -129,11 +135,12 @@
         <Grid Margin="0,0,0,18"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions><Button Content="← 返回" Click="CloseOverlay_Click" VerticalAlignment="Center" Padding="8,6" Background="Transparent" BorderBrush="Transparent" ToolTip="返回主窗口（Esc）"/><TextBlock x:Name="OverlayTitle" Grid.Column="1" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0"/></Grid>
         <Grid Grid.Row="1">
           <Grid x:Name="SettingsPanel" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-            <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,18"><UniformGrid Columns="4">
+            <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,18"><UniformGrid Columns="5">
               <Button Content="外观" Tag="appearance" Click="SettingsTab_Click"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource NavigationButton}"><Style.Triggers><DataTrigger Binding="{Binding Visibility, ElementName=AppearanceSection}" Value="Visible"><Setter Property="Background" Value="{DynamicResource Tint}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontWeight" Value="SemiBold"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
               <Button Content="自动清理" Tag="automation" Click="SettingsTab_Click"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource NavigationButton}"><Style.Triggers><DataTrigger Binding="{Binding Visibility, ElementName=AutomationSection}" Value="Visible"><Setter Property="Background" Value="{DynamicResource Tint}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontWeight" Value="SemiBold"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
               <Button Content="更新" Tag="updates" Click="SettingsTab_Click"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource NavigationButton}"><Style.Triggers><DataTrigger Binding="{Binding Visibility, ElementName=UpdatesSection}" Value="Visible"><Setter Property="Background" Value="{DynamicResource Tint}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontWeight" Value="SemiBold"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
               <Button Content="关于" Tag="about" Click="SettingsTab_Click"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource NavigationButton}"><Style.Triggers><DataTrigger Binding="{Binding Visibility, ElementName=AboutSection}" Value="Visible"><Setter Property="Background" Value="{DynamicResource Tint}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontWeight" Value="SemiBold"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
+              <Button Content="诊断" Tag="diagnostics" Click="SettingsTab_Click"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource NavigationButton}"><Style.Triggers><DataTrigger Binding="{Binding Visibility, ElementName=GrowthSection}" Value="Visible"><Setter Property="Background" Value="{DynamicResource Tint}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="FontWeight" Value="SemiBold"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
             </UniformGrid></Border>
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" PanningMode="VerticalOnly"><StackPanel Margin="0,0,5,8">
               <StackPanel x:Name="AppearanceSection">
@@ -146,12 +153,15 @@
                 <Border Style="{StaticResource SectionRule}"/><CheckBox x:Name="IslandCheck" Style="{StaticResource Switch}" Content="底部整理岛" Click="Preferences_Click"/><TextBlock Text="靠近主屏任务栏上方中央时浮出，点击执行原版三步整理。离开后收回，全屏应用期间不浮出。" Style="{StaticResource Description}" Margin="0,2,50,0"/>
               </StackPanel>
               <StackPanel x:Name="AutomationSection" Visibility="Collapsed">
+                <TextBlock Text="自动触发依据" FontWeight="SemiBold"/><ComboBox x:Name="TriggerModeCombo" SelectedIndex="0" Margin="0,8,0,10" AutomationProperties.Name="自动整理触发依据"><ComboBoxItem Content="内存占用百分比"/><ComboBoxItem Content="Windows 系统低内存通知"/></ComboBox><TextBlock Text="百分比参数只用于百分比模式；系统压力模式由 Windows 低内存信号触发。" Style="{StaticResource Description}" Margin="0,0,0,12"/>
                 <TextBlock Text="自动整理" Style="{StaticResource SectionTitle}"/><TextBlock Text="默认关闭，默认阈值55%。阈值或定时触发后达到占用门槛才执行原版三步；低压力跳过，整理后进入冷却，休眠恢复不补跑。" Style="{StaticResource Description}" Margin="0,0,0,20"/>
                 <CheckBox x:Name="ThresholdCheck" Style="{StaticResource Switch}" Content="启用阈值清理"/>
                 <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,12,0"><TextBlock Text="已用内存阈值" FontSize="12"/><TextBlock Text="55～98%" Style="{StaticResource Description}"/><TextBox x:Name="ThresholdInput" IsEnabled="{Binding IsChecked, ElementName=ThresholdCheck}" AutomationProperties.Name="已用内存阈值百分比"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="持续超限" FontSize="12"/><TextBlock Text="15～600 秒" Style="{StaticResource Description}"/><TextBox x:Name="SustainInput" IsEnabled="{Binding IsChecked, ElementName=ThresholdCheck}" AutomationProperties.Name="持续超限秒数"/></StackPanel></Grid>
                 <Border Style="{StaticResource SectionRule}" Margin="0,9,0,12"/><CheckBox x:Name="TimerCheck" Style="{StaticResource Switch}" Content="启用定时清理"/>
                 <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel Margin="0,0,12,0"><TextBlock Text="整理间隔" FontSize="12"/><TextBlock Text="15～1440 分钟" Style="{StaticResource Description}"/><TextBox x:Name="IntervalInput" IsEnabled="{Binding IsChecked, ElementName=TimerCheck}" AutomationProperties.Name="定时清理间隔分钟"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="清理冷却" FontSize="12"/><TextBlock Text="5～240 分钟" Style="{StaticResource Description}"/><TextBox x:Name="CooldownInput" AutomationProperties.Name="清理冷却分钟"/></StackPanel></Grid>
                 <Border Style="{StaticResource SectionRule}" Margin="0,9,0,15"/><CheckBox x:Name="FullAutoCheck" IsEnabled="False" Visibility="Collapsed"/>
+                <CheckBox x:Name="PauseFullscreenCheck" Content="全屏应用使用时暂缓自动整理" IsChecked="True"/><CheckBox x:Name="PauseDiskCheck" Content="磁盘繁忙时暂缓自动整理" IsChecked="True"/>
+                <TextBlock Text="暂缓原因会显示在首页，条件解除后重新评估。系统压力模式以 Windows 通知为准；定时也遵循所选压力条件。" Style="{StaticResource Description}" Margin="0,4,0,12"/>
                 <TextBlock Text="自动步骤：裁剪全系统工作集 → 刷新修改页 → 清理待机缓存。可能增加缺页与磁盘活动，不保证提速。升级前已开启的自动规则需核对参数后重新确认保存。" Style="{StaticResource Description}" Margin="0,5,0,18"/>
                 <Button Content="确认三步规则并保存" Click="SaveAutomation_Click" HorizontalAlignment="Left"/><TextBlock x:Name="AutomationFeedback" Style="{StaticResource Description}" Margin="0,12,0,0"/><TextBlock Text="连续自动失败 3 次会暂停，重新保存设置可恢复。软件完全退出后不会执行自动清理。" Style="{StaticResource Description}" Margin="0,14,0,0"/>
               </StackPanel>
@@ -159,7 +169,8 @@
                 <TextBlock Text="版本与更新" Style="{StaticResource SectionTitle}"/><TextBlock Text="从正式发布获取更新，由你决定下载和生效时机。" Style="{StaticResource Description}" Margin="0,0,0,20"/>
                 <CheckBox x:Name="UpdateCheck" Style="{StaticResource Switch}" Content="自动检查正式版本" Click="Preferences_Click"/><CheckBox x:Name="DownloadCheck" Visibility="Collapsed" IsEnabled="False"/><CheckBox x:Name="ApplyHiddenCheck" Visibility="Collapsed" IsEnabled="False"/>
                 <TextBlock Text="发现新版本会在首页提示。下载和重启更新均由你点击确认；不会自动下载或自动应用更新。" Style="{StaticResource Description}" Margin="0,12,0,0"/><Border Style="{StaticResource SectionRule}"/>
-                <WrapPanel><Button x:Name="CheckUpdateButton" Content="检查更新" Click="CheckUpdate_Click" Margin="0,0,8,8"/><Button x:Name="DownloadUpdateButton" Content="下载更新" Click="DownloadUpdate_Click" Margin="0,0,8,8" Visibility="Collapsed"/><Button x:Name="ApplyUpdateButton" Content="重启并更新" Click="ApplyUpdate_Click" Margin="0,0,0,8" Visibility="Collapsed"/></WrapPanel>
+                <WrapPanel><Button x:Name="CheckUpdateButton" Content="检查更新" Click="CheckUpdate_Click" Margin="0,0,8,8"/><Button x:Name="DownloadUpdateButton" Content="下载更新" Click="DownloadUpdate_Click" Margin="0,0,8,8" Visibility="Collapsed"/><Button x:Name="ApplyUpdateButton" Content="重启并更新" Click="ApplyUpdate_Click" Margin="0,0,0,8" Visibility="Collapsed"/><Button x:Name="CancelUpdateButton" Content="取消当前更新操作" Click="CancelUpdate_Click" Visibility="Collapsed" Margin="0,0,8,8"/></WrapPanel>
+                <TextBlock Text="下载中断或校验失败可重新下载。上次更新若未完成首次启动，将显示恢复入口；可从发行历史重新安装旧版。" Style="{StaticResource Description}"/>
                 <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="0,12,0,0" Margin="0,12,0,0"><TextBlock x:Name="UpdateFeedback" Text="尚未检查更新" Style="{StaticResource Description}"/></Border>
               </StackPanel>
               <StackPanel x:Name="AboutSection" Visibility="Collapsed">
@@ -169,6 +180,11 @@
                 <WrapPanel><Button Content="开源仓库" Click="Repository_Click" Margin="0,0,8,0"/><Button Content="查看许可证" Click="License_Click"/></WrapPanel>
                 <Border Style="{StaticResource SectionRule}"/><TextBlock Text="诊断与本地数据" FontWeight="SemiBold" Margin="0,0,0,10"/><TextBlock Text="诊断日志可帮助排查问题。清除本地数据将删除即清的设置、历史及日志并退出。" Style="{StaticResource Description}" Margin="0,0,0,12"/>
                 <WrapPanel><Button Content="导出诊断日志" Click="Export_Click" Margin="0,0,8,8"/><Button Content="清除本地用户数据" Click="DeleteData_Click" Margin="0,0,0,8"/></WrapPanel><Button Content="完全退出即清" Click="Exit_Click" HorizontalAlignment="Left" Margin="0,10,0,0" Background="Transparent"/>
+              </StackPanel>
+              <StackPanel x:Name="GrowthSection" Visibility="Collapsed">
+                <TextBlock Text="内存增长排行" Style="{StaticResource SectionTitle}"/><TextBlock Text="只在此页打开时每 5 秒采样，按本次观察的私有内存增长排序。仅诊断，不结束进程。" Style="{StaticResource Description}" Margin="0,0,0,16"/>
+                <Grid Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="90"/><ColumnDefinition Width="85"/></Grid.ColumnDefinitions><TextBlock Text="进程" FontSize="11" Foreground="{DynamicResource Muted}"/><TextBlock Grid.Column="1" Text="私有内存" FontSize="11" HorizontalAlignment="Right" Foreground="{DynamicResource Muted}"/><TextBlock Grid.Column="2" Text="本次增长" FontSize="11" HorizontalAlignment="Right" Foreground="{DynamicResource Muted}"/></Grid>
+                <StackPanel x:Name="GrowthItems"/><Border Style="{StaticResource SectionRule}"/><TextBlock x:Name="GrowthFeedback" Style="{StaticResource Description}"/><Button Content="刷新读数" Click="RefreshGrowth_Click" HorizontalAlignment="Left" Margin="0,12,0,0"/>
               </StackPanel>
             </StackPanel></ScrollViewer>
           </Grid>
