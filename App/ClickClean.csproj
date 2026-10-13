@@ -6,6 +6,7 @@
     <StartupObject>ClickClean.Program</StartupObject>
     <ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon>Assets\ClickClean.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier><SelfContained>true</SelfContained>
+    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>false</PublishReadyToRun><EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <Copyright>Copyright © 2026 离子怪 (ice11123) and Click-Clean contributors</Copyright><Company>Click-Clean</Company>
@@ -14,5 +15,6 @@
   <ItemGroup><Resource Include="Assets\ClickClean.png" /></ItemGroup>
   <ItemGroup><PackageReference Include="Velopack" Version="1.2.158" />
     <AssemblyMetadata Include="UpdateRepository" Value="$(RepositoryUrl)" />
+    <AssemblyMetadata Include="BuildFlavor" Value="experimental-x86" Condition="'$(RuntimeIdentifier)' == 'win-x86'" />
   </ItemGroup>
 </Project>

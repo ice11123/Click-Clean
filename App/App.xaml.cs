@@ -27,11 +27,10 @@ public partial class App : Application
     {
         base.OnStartup(e);
         if (preview) return;
-        if (Environment.OSVersion.Version.Build < 22000 || !Environment.Is64BitProcess ||
-            System.Runtime.InteropServices.RuntimeInformation.OSArchitecture != System.Runtime.InteropServices.Architecture.X64)
+        if (!BuildInfo.PlatformSupported)
         { MessageBox.Show("Click-Clean 仅支持 Windows 11 x64。", "平台不支持"); Shutdown(2); return; }
         if (e.Args.SequenceEqual(new[] { "--remove-startup" }))
-        { try { StartupTask.Set(false); Shutdown(); } catch { Shutdown(1); } return; }
+        { if (BuildInfo.ExperimentalX86) { Shutdown(); return; } try { StartupTask.Set(false); Shutdown(); } catch { Shutdown(1); } return; }
         if (e.Args.Any(a => a != "--tray") && !e.Args.SequenceEqual(new[] { "--exit" }))
         { MessageBox.Show("不支持的启动参数。", "Click-Clean"); Shutdown(2); return; }
         if (!WindowsMemoryApi.IsAdmin())
@@ -51,7 +50,10 @@ public partial class App : Application
             if (!first) { activation.Set(); Shutdown(); return; }
             // 安装与卸载要求用户先正常退出，不能强制中断正在刷盘的系统调用。
             installerGuard = new Mutex(false, @"Local\ClickClean.InstallationActive");
-            var store = new Store();
+            var store = BuildInfo.ExperimentalX86
+                ? new Store(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClickCleanData-x86"))
+                : new Store();
+            if (BuildInfo.ExperimentalX86) { store.Settings.Startup = false; store.Settings.CheckUpdates = false; }
             var recovery = new UpdateRecovery(store.Root); recovery.BeginLaunch();
             InstallationMetadata.RefreshVersion(store);
             DispatcherUnhandledException += (_, args) => {

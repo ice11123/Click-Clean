@@ -10,6 +10,26 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--architecture-check") {
+            RunUpdateCheck(async () => {
+                var expectedX86 = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X86;
+                if (BuildInfo.ExperimentalX86 != expectedX86 || !BuildInfo.PlatformSupported) throw new InvalidOperationException("构建标识或平台门禁不匹配。");
+                var memory = new WindowsMemoryApi().Read();
+                if (memory.Total == 0 || memory.Available > memory.Total) throw new InvalidDataException("本机只读内存样本无效。");
+                if (expectedX86) {
+                    var transportCreated = false;
+                    using var updates = new UpdateService(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[1]))!, "unused-update-state.json"), () => { transportCreated = true; throw new InvalidOperationException("不能进入x64更新通道"); });
+                    await updates.CheckAsync(); await updates.DownloadAsync();
+                    if (transportCreated || updates.Ready || !updates.Status.Contains("32位试验版")) throw new InvalidOperationException("32位更新隔离失效。");
+                }
+                var method = typeof(MiniIsland).GetNestedType("Native", System.Reflection.BindingFlags.NonPublic)!.GetMethod("PrimaryFullscreen", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+                method.Invoke(null, new object[] { IntPtr.Zero });
+                var native = typeof(MiniIsland).GetNestedType("Native", System.Reflection.BindingFlags.NonPublic)!;
+                var foreground = (IntPtr)native.GetMethod("GetForegroundWindow", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.Invoke(null, null)!;
+                native.GetMethod(expectedX86 ? "GetWindowLong" : "GetWindowLongPtr", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.Invoke(null, new object[] { foreground, -16 });
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { ProcessArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(), OsArchitecture = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(), BuildInfo.ExperimentalX86, BuildInfo.PlatformSupported, ReadOnly = true, NativeEntryResolved = true, StyleReadFromWindow = foreground != IntPtr.Zero, Memory = memory }, new JsonSerializerOptions { WriteIndented = true }));
+            }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
         if (args.Length == 2 && args[0] == "--profile-runtime") { RuntimeProfile.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--profile-pointer") { RuntimeProfile.Run(args[1], true); return; }
         if (args.Length == 2 && args[0] == "--profile-ui") { RuntimeProfile.Run(args[1], true, true); return; }

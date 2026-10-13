@@ -161,6 +161,7 @@ public sealed class ShellState(ICommand command) : BindableState
 {
     public ICommand Command { get; } = command;
     public bool Preview { get; init; }
+    public bool StableFeatures => !BuildInfo.ExperimentalX86;
     private bool compact;
     public bool Compact { get => compact; set => Set(ref compact, value); }
     public SettingsState Settings { get; } = new();
@@ -172,7 +173,7 @@ public sealed class ShellState(ICommand command) : BindableState
     private bool downloadIndeterminate;
     private ResultRow? recent, detail;
     public string Version => "v" + BuildInfo.Version;
-    public string AboutVersion => $"版本 {BuildInfo.Version} · Windows 11 x64\n提交 {BuildInfo.Commit}";
+    public string AboutVersion => $"版本 {BuildInfo.Version} · {BuildInfo.PlatformLabel}\n提交 {BuildInfo.Commit}";
     public string Page { get => page; set { if (Set(ref page, value)) foreach (var n in new[] { nameof(Overview), nameof(Records), nameof(Diagnostics), nameof(SettingsPage), nameof(HomeBannerVisible) }) Notify(n); } }
     public bool Overview => Page == "overview";
     public bool Records => Page == "history";

@@ -22,6 +22,7 @@ internal static class RebuiltUiCheck
         var state = window.Presentation; window.DesktopIsland?.PreviewReveal(false);
         Assert(store.Settings.Theme == "light" && store.Settings.MiniIsland && !store.Settings.Startup, "新安装浅色、岛开启、登录启动关闭");
         Assert(!store.Settings.Automation.ThresholdEnabled && !store.Settings.Automation.TimerEnabled && store.Settings.Automation.ThresholdPercent == 55, "自动默认关闭，门槛55保留");
+        Assert(Control<CheckBox>("StartupCheck").IsEnabled == !BuildInfo.ExperimentalX86 && Control<CheckBox>("UpdateCheck").IsEnabled == !BuildInfo.ExperimentalX86, "仅正式版开放登录启动及更新偏好，32位试验控件禁用");
         await Settle();
         Assert(!state.OperationVisible && state.IdleHintVisible && state.NoRecent, "空闲首页不重复显示就绪和空记录说明");
         window.RenderTo(Path.Combine(output, "light-idle.png"));

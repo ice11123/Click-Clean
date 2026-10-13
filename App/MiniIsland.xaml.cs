@@ -221,6 +221,7 @@ public partial class MiniIsland : Window
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(IntPtr window, out NativeRect rectangle);
         [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr window, int index);
         internal static bool PrimaryFullscreen(IntPtr own)
         {
             var foreground = GetForegroundWindow();
@@ -228,7 +229,9 @@ public partial class MiniIsland : Window
             GetWindowThreadProcessId(foreground, out var process);
             GetWindowThreadProcessId(GetShellWindow(), out var shellProcess);
             if (process == 0 || process == shellProcess || process == Environment.ProcessId) return false;
-            if ((GetWindowLongPtr(foreground, -16).ToInt64() & 0x00C00000) != 0 || !GetWindowRect(foreground, out var rect)) return false;
+            // 32位导出表使用GetWindowLongW；C#不会应用原生头文件的宏别名。
+            var style = Environment.Is64BitProcess ? GetWindowLongPtr(foreground, -16).ToInt64() : GetWindowLong(foreground, -16);
+            if ((style & 0x00C00000) != 0 || !GetWindowRect(foreground, out var rect)) return false;
             var screen = System.Windows.Forms.Screen.PrimaryScreen;
             if (screen is null) return false;
             var bounds = screen.Bounds;

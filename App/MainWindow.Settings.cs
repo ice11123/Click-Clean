@@ -23,6 +23,7 @@ public partial class MainWindow
         var old = (value.Theme, value.ReduceMotion, value.MiniIsland, value.CloseToTray, value.Startup, value.CheckUpdates);
         try {
             if (e.PropertyName == "Startup") {
+                if (BuildInfo.ExperimentalX86) throw new NotSupportedException("32位试验包暂不提供登录启动，请使用推荐的64位正式版。");
                 if (preview) { state.Feedback = "交互预览不创建登录任务。"; LoadPreferences(); return; }
                 StartupTask.Set(state.Startup);
             }
@@ -35,7 +36,7 @@ public partial class MainWindow
         }
         catch (Exception ex) {
             value.Theme = old.Theme; value.ReduceMotion = old.ReduceMotion; value.MiniIsland = old.MiniIsland; value.CloseToTray = old.CloseToTray; value.Startup = old.Startup; value.CheckUpdates = old.CheckUpdates;
-            if (e.PropertyName == "Startup" && !preview) {
+            if (e.PropertyName == "Startup" && !preview && !BuildInfo.ExperimentalX86) {
                 try { StartupTask.Set(old.Startup); } catch (Exception rollback) { store.Log("登录任务恢复失败：" + rollback); value.Startup = StartupTask.Exists(); }
             }
             LoadPreferences(); state.Feedback = "设置未保存：" + ex.Message; store.Log(ex.ToString());

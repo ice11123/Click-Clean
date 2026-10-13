@@ -27,6 +27,19 @@ jobs:
       - name: Dependency audit
         shell: pwsh
         run: dotnet list App/ClickClean.csproj package --vulnerable --include-transitive
+      - name: Build x86 experiment
+        shell: pwsh
+        run: |
+          ./build-x86-experimental.ps1 -OutputRoot ./dist-x86
+          dotnet publish Diagnostics/ClickClean.Preview.csproj -c Release -r win-x86 --self-contained true -o ./dist-x86-check
+      - name: Read-only x86 architecture check
+        shell: pwsh
+        run: |
+          $output = Join-Path (Resolve-Path ./dist-x86) 'architecture.json'
+          $job = Start-Process ./dist-x86-check/ClickClean.Preview.exe -ArgumentList "--architecture-check `"$output`"" -PassThru -WindowStyle Hidden
+          if (-not $job.WaitForExit(60000)) { $job.Kill(); throw '32位只读检查超时' }
+          if ($job.ExitCode -ne 0) { Get-Content ([IO.Path]::ChangeExtension($output, '.failure.txt')); throw '32位架构检查失败' }
+          Get-Content $output
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Click-Clean-win-x64
@@ -36,4 +49,6 @@ jobs:
             dist/SHA256SUMS.txt
             dist/releases/*.nupkg
             dist/releases/releases.win.json
+            dist-x86/*Experimental.zip
+            dist-x86/architecture.json
           retention-days: 14

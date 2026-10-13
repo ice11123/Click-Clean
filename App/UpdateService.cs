@@ -13,6 +13,12 @@ public static class BuildInfo
     public static string Repository => typeof(BuildInfo).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
         .FirstOrDefault(a => a.Key == "UpdateRepository")?.Value ?? "";
     public static string Commit => typeof(BuildInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "开发构建";
+    public static bool ExperimentalX86 => typeof(BuildInfo).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+        .Any(a => a.Key == "BuildFlavor" && a.Value == "experimental-x86");
+    public static string PlatformLabel => ExperimentalX86 ? "Windows 11 · x86试验版" : "Windows 11 x64";
+    public static bool PlatformSupported => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000) &&
+        System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.X64 &&
+        (Environment.Is64BitProcess || ExperimentalX86);
 }
 
 public interface IApplicationUpdates : IDisposable
@@ -61,6 +67,8 @@ public sealed class UpdateService : IApplicationUpdates
     public Task DownloadAsync() => RunAsync(true);
     private async Task RunAsync(bool download)
     {
+        // 试验包与正式更新清单隔离，禁止32位程序下载64位包后覆盖自身。
+        if (BuildInfo.ExperimentalX86) { Report("32位试验版请从发行页手动下载新版；不使用正式版更新通道。", UpdatePhase.Current); return; }
         if (Interlocked.CompareExchange(ref gate, 1, 0) != 0) return;
         using var active = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         operation = active; Progress = null;

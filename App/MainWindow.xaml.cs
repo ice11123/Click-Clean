@@ -50,7 +50,7 @@ public partial class MainWindow : Window
         processes = new(processOverride ?? new ProcessMemoryReader()); processes.Initialize();
         Presentation = new(new UiCommand(DispatchAction)) { Preview = preview };
         InitializeComponent(); DataContext = Presentation;
-        Title = preview ? "Click-Clean 即清 · 交互预览" : "Click-Clean 即清";
+        Title = preview ? "Click-Clean 即清 · 交互预览" : BuildInfo.ExperimentalX86 ? "Click-Clean 即清 · x86试验版" : "Click-Clean 即清";
         SourceInitialized += (_, _) => ApplyTheme();
         PreviewMouseDown += (_, _) => pointerInput = true;
         PreviewKeyDown += (_, e) => { pointerInput = false; if (e.Key == Key.Escape && DetailsPopup.IsOpen) { ClosePopup(); e.Handled = true; } };

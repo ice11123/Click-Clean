@@ -8,6 +8,7 @@ public static class StartupTask
     public static string Name => "ClickClean-" + Sid;
     public static void RemoveLegacy()
     {
+        if (BuildInfo.ExperimentalX86) return;
         dynamic service = Connect(); dynamic folder = service.GetFolder("\\");
         try { try { folder.DeleteTask("Qingqi-" + Sid, 0); } catch (Exception ex) when (ex.HResult == unchecked((int)0x80070002)) { } }
         finally { Marshal.FinalReleaseComObject(folder); Marshal.FinalReleaseComObject(service); }
@@ -21,6 +22,7 @@ public static class StartupTask
     }
     public static bool Exists()
     {
+        if (BuildInfo.ExperimentalX86) return false;
         dynamic service = Connect();
         try
         {
@@ -49,6 +51,10 @@ public static class StartupTask
     }
     public static void Set(bool enabled)
     {
+        if (BuildInfo.ExperimentalX86) {
+            if (enabled) throw new NotSupportedException("32位试验包不提供登录启动。");
+            return;
+        }
         dynamic service = Connect();
         dynamic folder = service.GetFolder("\\");
         try

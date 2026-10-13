@@ -1,1 +1,1 @@
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup></Project>
