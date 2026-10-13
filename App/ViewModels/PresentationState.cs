@@ -33,6 +33,8 @@ public sealed class ResultRow : BindableState
     public string Outcome => result.Success ? "步骤完成" : result.Cancelled ? "已取消" : result.Steps.Any(s => s.Success) ? "部分完成" : "整理失败";
     public string Delta => (result.FollowUp is null ? "即时可用 " : "复测可用 ") + Labels.Delta(result.PreferredChange);
     public string Meta => $"{result.Time:MM-dd HH:mm} · {result.Trigger} · {result.Seconds:0.0} 秒";
+    public string HomeOutcome => "上次整理 · " + (result.Success ? "已完成" : Outcome);
+    public string HomeDelta => "可用内存 " + Labels.Delta(result.PreferredChange);
     public string Observation => result.Sustained is not null ? $"{result.SustainedSeconds:0} 秒观测 {Labels.Delta(result.SustainedChange)}" :
         result.SustainedError is not null ? "持续观测：" + result.SustainedError : pendingObservation ? "30 秒持续观测中，可继续使用" : "持续观测：无记录";
     public void SetPending(bool value) { if (pendingObservation == value) return; pendingObservation = value; Notify(nameof(Observation)); }
@@ -47,7 +49,7 @@ public sealed class ResultRow : BindableState
     public void Update(CleanupResult value)
     {
         result = value;
-        foreach (var name in new[] { nameof(Result), nameof(Outcome), nameof(Delta), nameof(Meta), nameof(Observation), nameof(Details) }) Notify(name);
+        foreach (var name in new[] { nameof(Result), nameof(Outcome), nameof(Delta), nameof(Meta), nameof(Observation), nameof(Details), nameof(HomeOutcome), nameof(HomeDelta) }) Notify(name);
     }
 }
 
@@ -159,6 +161,8 @@ public sealed class ShellState(ICommand command) : BindableState
 {
     public ICommand Command { get; } = command;
     public bool Preview { get; init; }
+    private bool compact;
+    public bool Compact { get => compact; set => Set(ref compact, value); }
     public SettingsState Settings { get; } = new();
     public ObservableCollection<ResultRow> History { get; } = [];
     public ObservableCollection<ProcessRow> Processes { get; } = [];
@@ -183,15 +187,19 @@ public sealed class ShellState(ICommand command) : BindableState
     public string MemoryError { get => memoryError; set { if (Set(ref memoryError, value)) Notify(nameof(MemoryFailed)); } }
     public bool MemoryFailed => MemoryError.Length > 0;
     public double Percentage { get => percentage; set => Set(ref percentage, value); }
-    public bool Busy { get => busy; set { if (Set(ref busy, value)) { Notify(nameof(CanClean)); Notify(nameof(CleanLabel)); } } }
+    public bool Busy { get => busy; set { if (Set(ref busy, value)) { Notify(nameof(CanClean)); Notify(nameof(CleanLabel)); Notify(nameof(OperationVisible)); Notify(nameof(IdleHintVisible)); } } }
     private bool applying;
     public bool Applying { get => applying; set { if (Set(ref applying, value)) Notify(nameof(CanClean)); } }
     public bool CanClean => !Busy && !Applying;
     public string CleanLabel => Busy ? "正在整理…" : "一键整理";
-    public string Operation { get => operation; set => Set(ref operation, value); }
+    public string Operation { get => operation; set { if (Set(ref operation, value)) { Notify(nameof(OperationVisible)); Notify(nameof(IdleHintVisible)); } } }
+    public bool OperationVisible => Busy || Operation is not ("" or "就绪" or "步骤已完成");
+    public bool IdleHintVisible => !OperationVisible;
     public bool CanCancel { get => canCancel; set => Set(ref canCancel, value); }
     public string CancelText { get => cancelText; set => Set(ref cancelText, value); }
     public string Automatic { get => automatic; set => Set(ref automatic, value); }
+    private string automaticBrief = "已关闭  ›";
+    public string AutomaticBrief { get => automaticBrief; set => Set(ref automaticBrief, value); }
     public ResultRow? Recent { get => recent; set { if (Set(ref recent, value)) { Notify(nameof(HasRecent)); Notify(nameof(NoRecent)); } } }
     public bool HasRecent => Recent is not null;
     public bool NoRecent => !HasRecent;

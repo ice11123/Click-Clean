@@ -58,7 +58,7 @@ public partial class MainWindow
         ClosePopup();
         Presentation.PopupKind = kind; popupReturnFocus = Keyboard.FocusedElement; popupPage = Presentation.Page;
         DetailsPopup.PlacementTarget = target ?? (Presentation.Diagnostics ? DiagnosticsPane : OverviewPane);
-        PopupFrame.Width = Math.Max(220, Math.Min(460, LayoutRoot.ActualWidth));
+        PopupFrame.Width = Math.Max(220, Math.Min(460, ContentFrame.ActualWidth));
         PopupScroll.MaxHeight = Math.Max(80, Math.Min(380, SystemParameters.WorkArea.Height - 160));
         DetailsPopup.IsOpen = true;
     }

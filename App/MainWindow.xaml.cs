@@ -69,7 +69,7 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         IsVisibleChanged += (_, _) => SetSampling();
         StateChanged += (_, _) => SetSampling();
-        SizeChanged += (_, _) => LayoutRoot.Margin = new(ActualWidth < 480 ? 16 : 24, 8, ActualWidth < 480 ? 16 : 24, 14);
+        SizeChanged += (_, _) => UpdateLayoutMode();
         SystemParameters.StaticPropertyChanged += SystemPreferenceChanged;
         WorkingCheck.IsChecked = store.Settings.SelectedSteps.Contains(MemoryCommand.WorkingSets);
         ModifiedCheck.IsChecked = store.Settings.SelectedSteps.Contains(MemoryCommand.ModifiedPages);
@@ -231,7 +231,14 @@ public partial class MainWindow : Window
     }
     public void ApplyTheme(string? overrideTheme = null) { NativeThemeApplied = ThemePalette.Apply(this, overrideTheme ?? store.Settings.Theme, store.Settings.ReduceMotion); if (mini is not null) { mini.MotionAllowed = MotionEnabled; mini.RefreshStatus(); } }
     private void SystemPreferenceChanged(object? sender, PropertyChangedEventArgs e) { if (!disposed) Dispatcher.BeginInvoke(() => { if (!disposed) { FitWorkArea(); ApplyTheme(); } }); }
-    private void FitWorkArea() { var area = SystemParameters.WorkArea; MinWidth = Math.Min(440, area.Width); MinHeight = Math.Min(540, area.Height); Width = Math.Min(Width, area.Width); Height = Math.Min(Height, area.Height); LayoutRoot.Margin = new(Width < 480 ? 16 : 24, 8, Width < 480 ? 16 : 24, 14); }
+    private void FitWorkArea() { var area = SystemParameters.WorkArea; MinWidth = Math.Min(440, area.Width); MinHeight = Math.Min(540, area.Height); Width = Math.Min(Width, area.Width); Height = Math.Min(Height, area.Height); UpdateLayoutMode(); }
+    private void UpdateLayoutMode()
+    {
+        Presentation.Compact = ActualWidth < 640;
+        var margin = Presentation.Compact ? 16 : 28;
+        ContentFrame.Margin = new(margin, 24, margin, 0);
+        Footer.Margin = new(margin, 12, margin, 14);
+    }
     public void ShowMain() { Show(); WindowState = WindowState.Normal; Activate(); }
     public void SetDockOperation(string text) { dockStatus.SetOperation(text); mini?.RefreshStatus(); }
     public void PreviewDockIdle(MemorySnapshot snapshot) { dockStatus.SetIdle(); dockStatus.SetMemory(snapshot); mini?.RefreshStatus(); }
@@ -278,11 +285,14 @@ public partial class MainWindow : Window
     public static void Capture(Window window, string path, double factor = 1)
     {
         window.UpdateLayout();
-        var bitmap = new RenderTargetBitmap((int)(window.ActualWidth * factor), (int)(window.ActualHeight * factor), 96 * factor, 96 * factor, PixelFormats.Pbgra32);
+        // WPF 离屏渲染不包含原生标题栏；按客户区取图，避免把非客户区高度填成底部白边。
+        var visual = window.Content as FrameworkElement ?? window;
+        var width = visual.ActualWidth; var height = visual.ActualHeight;
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(width * factor), (int)Math.Ceiling(height * factor), 96 * factor, 96 * factor, PixelFormats.Pbgra32);
         if (window.Background is { } background && background != Brushes.Transparent) {
-            var backing = new DrawingVisual(); using (var drawing = backing.RenderOpen()) drawing.DrawRectangle(background, null, new Rect(0, 0, window.ActualWidth, window.ActualHeight)); bitmap.Render(backing);
+            var backing = new DrawingVisual(); using (var drawing = backing.RenderOpen()) drawing.DrawRectangle(background, null, new Rect(0, 0, width, height)); bitmap.Render(backing);
         }
-        bitmap.Render(window); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var stream = File.Create(path); encoder.Save(stream);
+        bitmap.Render(visual); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var stream = File.Create(path); encoder.Save(stream);
     }
 }
 

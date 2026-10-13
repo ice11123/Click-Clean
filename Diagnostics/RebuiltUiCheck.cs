@@ -22,12 +22,18 @@ internal static class RebuiltUiCheck
         var state = window.Presentation; window.DesktopIsland?.PreviewReveal(false);
         Assert(store.Settings.Theme == "light" && store.Settings.MiniIsland && !store.Settings.Startup, "新安装浅色、岛开启、登录启动关闭");
         Assert(!store.Settings.Automation.ThresholdEnabled && !store.Settings.Automation.TimerEnabled && store.Settings.Automation.ThresholdPercent == 55, "自动默认关闭，门槛55保留");
+        await Settle();
+        Assert(!state.OperationVisible && state.IdleHintVisible && state.NoRecent, "空闲首页不重复显示就绪和空记录说明");
+        window.RenderTo(Path.Combine(output, "light-idle.png"));
         memory.FailRead = true; await Task.Delay(1150);
         Assert(state.Load == "—" && state.Available == "—" && state.MemoryFailed, "读数失败清除旧数字");
+        await Settle(); window.RenderTo(Path.Combine(output, "light-read-error.png"));
         memory.FailRead = false; await Task.Delay(1150);
         Assert(state.Load != "—" && !state.MemoryFailed, "读数恢复原位显示真实数据");
         memory.Available = 28UL << 30; var history = store.History.Count; var last = store.Settings.LastCleanupUtc;
-        Click("CleanButton"); Click("CleanButton"); await Wait(() => !window.IsBusy);
+        Click("CleanButton"); Click("CleanButton"); await Task.Delay(80); await Settle();
+        Assert(state.OperationVisible && Control<Button>("CancelButton").IsVisible && !Control<Button>("CleanButton").IsEnabled, "运行时实际步骤和取消入口可见，主按钮禁止重复执行");
+        window.RenderTo(Path.Combine(output, "light-working.png")); await Wait(() => !window.IsBusy);
         Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()) && store.History.Count == history + 1 && store.Settings.LastCleanupUtc == last, "低占用手动仍执行2/3/4，重复点击无重复任务，预览不更改实机整理时间");
         await Task.Delay(300);
         Assert(store.History[0].Sustained is not null && state.Recent?.Delta.StartsWith("复测可用") == true, "3秒复测优先、30秒观测只补充同条模拟记录");
@@ -35,6 +41,9 @@ internal static class RebuiltUiCheck
         Click("CleanButton"); await Wait(() => !window.IsBusy);
         Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages }) && state.Recent?.Outcome == "部分完成", "第二步失败停止第三步，呈现部分完成");
         Assert(state.Recent!.Details.Contains("0xC0000022"), "结果详情保留真实模拟返回码");
+        await Settle();
+        Assert(state.OperationVisible && Control<TextBlock>("StatusText").IsVisible && state.Recent.HomeOutcome.Contains("部分完成"), "简化首页保留失败原因和部分完成，不伪装成功");
+        window.RenderTo(Path.Combine(output, "light-partial-failure.png"));
         memory.FailureCommand = null; memory.Calls.Clear(); Click("CleanButton"); await Task.Delay(80); Click("CancelButton"); await Wait(() => !window.IsBusy);
         Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets }) && state.Recent?.Outcome == "已取消", "取消等待当前步骤返回，不执行后续步骤");
         Click("CleanButton"); await Wait(() => !window.IsBusy);
@@ -90,12 +99,23 @@ internal static class RebuiltUiCheck
             Assert(window.NativeThemeApplied, "原生标题栏主题应用成功：" + theme);
             Assert(Descendants(window).OfType<TextBlock>().Where(t => t.IsVisible && (t.Style == window.FindResource("PageTitle") || t.Style == window.FindResource("GroupTitle"))).All(t => t.Foreground is SolidColorBrush brush && brush.Color == ColorOf("Text")), "实际首页标题继承主题前景色：" + theme);
             Assert(Contrast(ColorOf("Muted"), ColorOf("Bg")) >= 4.5 && Contrast(ColorOf("AccentText"), ColorOf("Accent")) >= 4.5, "正文和主按钮基础对比度合格：" + theme);
+            Assert(Contrast(((SolidColorBrush)Control<Button>("OverviewButton").Foreground).Color, ColorOf("Tint")) >= 4.5, "选中导航文字在浅深色背景均可读：" + theme);
             Command("overview"); update.Set(UpdatePhase.Current, "当前已是最新版本"); await Settle();
             Keyboard.ClearFocus();
             window.RenderTo(Path.Combine(output, theme + "-main.png"));
+            using (var captureStream = File.OpenRead(Path.Combine(output, theme + "-main.png"))) {
+                var captured = BitmapFrame.Create(captureStream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                var client = (FrameworkElement)window.Content;
+                Assert(captured.PixelWidth == (int)Math.Ceiling(client.ActualWidth) && captured.PixelHeight == (int)Math.Ceiling(client.ActualHeight), "截图严格使用客户区尺寸，无底部非客户区白边：" + theme);
+            }
+            Assert(!Descendants(window).OfType<TextBlock>().Any(t => t.IsVisible && (t.Text.Contains("交互预览") || t.Text.Contains("模拟数据") || t.Text == "整理全系统内存")), "首页移除预览标记与空闲重复说明：" + theme);
+            var resultOption = Control<Button>("RecentDetailsButton");
+            Assert(resultOption.Style == window.FindResource("AcrylicOption") && ((Border)resultOption.Template.FindName("Material", resultOption)).CornerRadius.TopLeft == 12, "结果入口使用统一12 DIP磨砂圆角模板：" + theme);
             var scroller = Control<ScrollViewer>("MainContent");
             Assert(scroller.ScrollableHeight < 1, $"默认窗口读数、操作、成功结果首屏完整：{theme}，内容{scroller.ExtentHeight:0.0}，视口{scroller.ViewportHeight:0.0}");
             var primary = Control<Button>("CleanButton"); var primaryText = Descendants(primary).OfType<TextBlock>().First(t => t.Text == "一键整理");
+            Assert(primary.ActualWidth >= 160 && primary.ActualHeight >= 44 && primaryText.FontSize >= 16, "主操作尺寸与实际字号突出：" + theme);
+            Assert(state.AutomaticBrief == "已关闭  ›" && !state.OperationVisible, "自动状态简短，完成状态不与结果重复：" + theme);
             Assert(((SolidColorBrush)primaryText.Foreground).Color == ColorOf("AccentText"), "主按钮实际文字使用白色而非正文色：" + theme);
             window.RenderTo(Path.Combine(output, theme + "-main.png"));
             Click("RecentDetailsButton"); await Settle(); Assert(Control<System.Windows.Controls.Primitives.Popup>("DetailsPopup").IsOpen && state.Detail?.Id == sample.Id, "首页打开统一详情：" + theme);

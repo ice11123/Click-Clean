@@ -66,6 +66,8 @@ public partial class MainWindow
     private void RefreshAutomationSummary()
     {
         var value = store.Settings.Automation;
+        Presentation.AutomaticBrief = store.Settings.AutomationNeedsConfirmation ? "待确认  ›" : automation.Paused ? "已暂停  ›" :
+            !value.ThresholdEnabled && !value.TimerEnabled ? "已关闭  ›" : automation.DeferredReason is not null ? "暂缓执行  ›" : "已开启  ›";
         Presentation.Automatic = store.Settings.AutomationNeedsConfirmation ? "自动规则待确认" : automation.Paused ? "自动整理已暂停 · 连续失败" :
             automation.DeferredReason is { } reason ? "自动整理暂缓 · " + reason :
             !value.ThresholdEnabled && !value.TimerEnabled ? "自动整理：关闭" :
