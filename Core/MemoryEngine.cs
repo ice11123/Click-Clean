@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace ClickClean.Core;
 
-public enum MemoryCommand { WorkingSets = 2, ModifiedPages = 3, StandbyCache = 4 }
+public enum MemoryCommand { WorkingSets = 2, ModifiedPages = 3, StandbyCache = 4, BackgroundWorkingSets = 100 }
 public record MemorySnapshot(ulong Total, ulong Available, ulong Commit, ulong CommitLimit)
 {
     public ulong? SystemCache { get; init; }
@@ -20,6 +20,7 @@ public record CleanupResult(DateTimeOffset Time, MemorySnapshot Before, MemorySn
     List<StepResult> Steps, bool Cancelled, string? Error, double Seconds)
 {
     public Guid Id { get; init; } = Guid.NewGuid();
+    public BackgroundCleanupSummary? BackgroundCleanup { get; init; }
     public long? AvailableChange => After is null ? null : checked((long)After.Available - (long)Before.Available);
     public string Trigger { get; init; } = "手动";
     public string? ObservationError { get; init; }
@@ -32,7 +33,9 @@ public record CleanupResult(DateTimeOffset Time, MemorySnapshot Before, MemorySn
     public long? PreferredChange => FollowUp is null ? AvailableChange : FollowUpChange;
     public long? FollowUpChange => FollowUp is null ? null : checked((long)FollowUp.Available - (long)Before.Available);
     public long? CommitChange => After is null ? null : checked((long)After.Commit - (long)Before.Commit);
-    public bool Success => Error is null && !Cancelled && Steps.Count > 0 && Steps.All(s => s.Success);
+    public bool Success => Error is null && !Cancelled && Steps.Count > 0 && Steps.All(s => s.Success) &&
+        (!Steps.Any(s => s.Command == MemoryCommand.BackgroundWorkingSets) || BackgroundCleanup is not null) &&
+        (BackgroundCleanup is null || BackgroundCleanup.Completed > 0 && BackgroundCleanup.Failed == 0);
 }
 public interface IMemoryApi
 {
@@ -55,6 +58,8 @@ public sealed class MemoryEngine(IMemoryApi api)
         var selected = commands.Distinct().OrderBy(c => (int)c).ToArray();
         if (selected.Length == 0 || selected.Any(c => !Enum.IsDefined(c)))
             throw new ArgumentException("请至少选择一个有效的整理步骤。");
+        if (selected.Contains(MemoryCommand.BackgroundWorkingSets) && selected.Length != 1)
+            throw new ArgumentException("日常整理不能与高级全系统步骤组合。");
         if (Interlocked.CompareExchange(ref running, 1, 0) != 0)
             throw new InvalidOperationException("整理正在进行，请等待完成。");
         try
@@ -70,7 +75,8 @@ public sealed class MemoryEngine(IMemoryApi api)
                 var cancelled = false;
                 try
                 {
-                    using var privilege = api.EnablePrivilege();
+                    // 当前用户的有界后台回收不需要开启系统特权；高级操作单独提权。
+                    using var privilege = selected[0] == MemoryCommand.BackgroundWorkingSets ? null : api.EnablePrivilege();
                     foreach (var command in selected)
                     {
                         if (cancellation.IsCancellationRequested) { cancelled = true; break; }
@@ -83,15 +89,20 @@ public sealed class MemoryEngine(IMemoryApi api)
                         if (!step.Success) { error = $"{Labels.Name(command)}失败（{step.StatusHex}）"; break; }
                     }
                 }
+                // UAC拒绝也通过OperationCanceledException报告，不要求应用取消令牌已取消。
+                catch (OperationCanceledException) { cancelled = true; }
                 catch (Exception ex) { error = ex.Message; }
                 MemorySnapshot? after = null;
                 string? observationError = null;
                 try { after = ReadSnapshot(); }
                 catch (Exception ex) { observationError = "读取整理后内存失败：" + ex.Message; }
                 instantTimestamp = Stopwatch.GetTimestamp();
-                return new CleanupResult(started, before, after, steps, cancelled, error, clock.Elapsed.TotalSeconds) { ObservationError = observationError };
+                return new CleanupResult(started, before, after, steps, cancelled, error, clock.Elapsed.TotalSeconds) {
+                    ObservationError = observationError,
+                    BackgroundCleanup = selected[0] == MemoryCommand.BackgroundWorkingSets ? (api as IMemoryPerformanceApi)?.LastBackgroundCleanup : null
+                };
             });
-            if (followUpDelay is null || result.Steps.Count == 0 || result.Cancelled) return result;
+            if (followUpDelay is null || result.Steps.Count == 0 || result.Cancelled || result.BackgroundCleanup is { Attempted: 0 }) return result;
             // 所有系统调用结束且权限恢复后才复测；运行门闩保留到观测结束。
             double ObservationElapsed() => Stopwatch.GetElapsedTime(instantTimestamp).TotalSeconds;
             try
@@ -126,6 +137,7 @@ public static class Labels
         MemoryCommand.WorkingSets => "裁剪工作集",
         MemoryCommand.ModifiedPages => "刷新修改页",
         MemoryCommand.StandbyCache => "清理待机缓存",
+        MemoryCommand.BackgroundWorkingSets => "整理闲置后台",
         _ => "未知步骤"
     };
     public static string Bytes(ulong bytes) => $"{bytes / 1073741824d:0.00} GiB";

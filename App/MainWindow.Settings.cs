@@ -11,16 +11,17 @@ public partial class MainWindow
         try {
             var value = store.Settings; var state = Presentation.Settings;
             state.Theme = value.Theme switch { "dark" => 1, "system" => 2, _ => 0 };
+            state.Language = value.Language == "en-US" ? 1 : 0;
             state.ReduceMotion = value.ReduceMotion; state.Island = value.MiniIsland; state.CloseToTray = value.CloseToTray; state.Startup = value.Startup; state.CheckUpdates = value.CheckUpdates;
-            if (!state.Draft.Dirty) { state.Draft.Load(value.Automation); if (value.AutomationNeedsConfirmation) state.Draft.Feedback = "旧自动配置已暂停，请核对原版三步规则并确认保存。"; }
+            if (!state.Draft.Dirty) { state.Draft.Load(value.Automation); if (value.AutomationNeedsConfirmation) state.Draft.Feedback = "旧自动配置已暂停，请核对新的后台优化规则并确认保存。"; }
         }
         finally { loadingSettings = false; }
     }
     private void PreferenceChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (loadingSettings || disposed || e.PropertyName is not ("Theme" or "ReduceMotion" or "Island" or "CloseToTray" or "Startup" or "CheckUpdates")) return;
+        if (loadingSettings || disposed || e.PropertyName is not ("Theme" or "Language" or "ReduceMotion" or "Island" or "CloseToTray" or "Startup" or "CheckUpdates")) return;
         var state = Presentation.Settings; var value = store.Settings;
-        var old = (value.Theme, value.ReduceMotion, value.MiniIsland, value.CloseToTray, value.Startup, value.CheckUpdates);
+        var old = (value.Theme, value.Language, value.LanguageChosen, value.ReduceMotion, value.MiniIsland, value.CloseToTray, value.Startup, value.CheckUpdates);
         try {
             if (e.PropertyName == "Startup") {
                 if (BuildInfo.ExperimentalX86) throw new NotSupportedException("32位试验包暂不提供登录启动，请使用推荐的64位正式版。");
@@ -28,14 +29,17 @@ public partial class MainWindow
                 StartupTask.Set(state.Startup);
             }
             value.Theme = state.Theme switch { 1 => "dark", 2 => "system", _ => "light" };
+            value.Language = state.Language == 1 ? "en-US" : "zh-CN";
+            if (e.PropertyName == "Language") value.LanguageChosen = true;
             value.ReduceMotion = state.ReduceMotion; value.MiniIsland = state.Island; value.CloseToTray = state.CloseToTray; value.Startup = state.Startup; value.CheckUpdates = state.CheckUpdates;
             value.AutoDownloadUpdates = value.AutoApplyHidden = false;
-            store.SaveSettings(); state.Feedback = ""; ApplyTheme();
+            store.SaveSettings(); state.Feedback = ""; Localization.Language = value.Language; ApplyTheme();
             if (value.MiniIsland) ShowIsland(); else mini?.Hide();
             SetSampling();
         }
         catch (Exception ex) {
             value.Theme = old.Theme; value.ReduceMotion = old.ReduceMotion; value.MiniIsland = old.MiniIsland; value.CloseToTray = old.CloseToTray; value.Startup = old.Startup; value.CheckUpdates = old.CheckUpdates;
+            value.Language = old.Language; value.LanguageChosen = old.LanguageChosen; Localization.Language = value.Language;
             if (e.PropertyName == "Startup" && !preview && !BuildInfo.ExperimentalX86) {
                 try { StartupTask.Set(old.Startup); } catch (Exception rollback) { store.Log("登录任务恢复失败：" + rollback); value.Startup = StartupTask.Exists(); }
             }
@@ -55,8 +59,7 @@ public partial class MainWindow
             return false;
         }
         if ((value.ThresholdEnabled || value.TimerEnabled) && !preview) {
-            var gate = value.TriggerMode == AutomaticTriggerMode.SystemPressure ? "Windows 报告低内存" : $"占用达到 {value.ThresholdPercent}%";
-            if (MessageBox.Show(this, $"自动规则将在{gate}且满足所选触发条件时执行原版三步。\n\n可能引起缺页、短暂卡顿和磁盘忙碌，不保证提速。冷却 {value.CooldownMinutes} 分钟。确认保存？", "确认自动整理规则", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return false;
+            if (MessageBox.Show(this, Localization.Text("保存后，仅在 Windows 确认低内存时整理闲置后台。不会执行全系统三步。继续？"), Localization.Text("确认自动整理规则"), MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return false;
         }
         var previous = store.Settings.Automation; var confirmation = store.Settings.AutomationNeedsConfirmation;
         store.Settings.Automation = value; store.Settings.AutomationNeedsConfirmation = false;
@@ -77,19 +80,19 @@ public partial class MainWindow
     }
     private void ClearHistory()
     {
-        if (MessageBox.Show(this, "清空本地整理记录？", "清空记录", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        if (MessageBox.Show(this, Localization.Text("清空本地整理记录？"), Localization.Text("清空记录"), MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return;
         cleanup.StopObservation(); store.Clear(); Presentation.Recent = null; Presentation.Detail = null; RefreshHistory(); ClosePopup();
     }
     private void ExportLog()
     {
-        var dialog = new SaveFileDialog { Title = "导出诊断日志", FileName = "Click-Clean-诊断.txt", Filter = "文本文件|*.txt" };
+        var dialog = new SaveFileDialog { Title = Localization.Text("导出诊断日志"), FileName = "Click-Clean-diagnostic.txt", Filter = Localization.Text("文本文件|*.txt") };
         if (dialog.ShowDialog(this) != true) return;
         store.Export(dialog.FileName, BuildInfo.Version); Presentation.ProcessFeedback = "已导出。分享前请检查个人信息。";
     }
     private void DeleteData()
     {
         if (IsBusy || updates.Busy || applying) { Presentation.Settings.Feedback = "请等当前操作结束后再清除数据。"; return; }
-        if (MessageBox.Show(this, "删除即清自己的设置、历史和诊断日志并退出？不删除旧清栖数据。", "清除本地数据", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        if (MessageBox.Show(this, Localization.Text("删除即清自己的设置、历史和诊断日志并退出？不删除旧清栖数据。"), Localization.Text("清除本地数据"), MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
         cleanup.StopObservation(); if (!preview) StartupTask.Set(false);
         foreach (var file in new[] { "settings.json", "settings.json.tmp", "history.json", "history.json.tmp", "diagnostic.log", "diagnostic.log.previous", "migration.json", "update-state.json", "update-state.json.tmp" }) File.Delete(Path.Combine(store.Root, file));
         DisposeResources(); Application.Current.Shutdown();

@@ -5,6 +5,7 @@ param(
     [string]$SigningThumbprint,
     [string]$SignToolPath,
     [string]$TimestampUrl,
+    [string]$PrivilegedPublishDir,
     [switch]$SkipInstaller,
     [switch]$IncludePreview
 )
@@ -65,13 +66,36 @@ Copy-Item -LiteralPath $portable.FullName -Destination $portableTarget -Force
 $installStage = Join-Path $OutputRoot 'installer-stage'
 Expand-Archive -LiteralPath $portableTarget -DestinationPath $installStage -Force
 if (-not $SkipInstaller) {
+    if (-not $PrivilegedPublishDir) {
+        $PrivilegedPublishDir = Join-Path $OutputRoot 'privileged-publish'
+        # 没有本机微软C++工具链时明确失败，可使用同一源码提交的CI Native AOT产物。
+        Run-Tool 'dotnet' ('publish Privileged\ClickClean.Privileged.csproj -c Release -r win-x64 --self-contained true --nologo -o "' + $PrivilegedPublishDir + '"') 'privileged.log' 600
+    }
+    $PrivilegedPublishDir = [IO.Path]::GetFullPath($PrivilegedPublishDir)
+    $helperPath = Join-Path $PrivilegedPublishDir 'ClickClean.Privileged.exe'
+    if (-not (Test-Path -LiteralPath $helperPath)) { throw '缺少Native AOT系统组件。' }
+    $helperBytes = [IO.File]::ReadAllBytes($helperPath)
+    $peOffset = [BitConverter]::ToInt32($helperBytes, 0x3c)
+    if ([BitConverter]::ToUInt16($helperBytes, $peOffset + 4) -ne 0x8664 -or [BitConverter]::ToUInt16($helperBytes, $peOffset + 24) -ne 0x20b -or
+        [BitConverter]::ToUInt32($helperBytes, $peOffset + 24 + 112 + 14 * 8) -ne 0) { throw '系统组件必须是无CLR载入目录的x64 Native AOT程序，拒绝托管回退。' }
+    $originPath = Join-Path $PrivilegedPublishDir 'build-origin.json'
+    if (Test-Path -LiteralPath $originPath) {
+        $origin = Get-Content -LiteralPath $originPath -Raw | ConvertFrom-Json
+        $currentCommit = & git -C $PSScriptRoot rev-parse HEAD
+        if ($origin.Commit -ne $currentCommit -or $origin.Protocol -ne 1 -or -not $origin.NativeAot -or $origin.SHA256 -ne (Get-FileHash -LiteralPath $helperPath -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'CI系统组件的提交、协议或哈希不匹配，禁止打包。' }
+    }
+    Run-Tool $helperPath '--self-test' 'privileged-self-test.log' 30
+    if ($signParams) {
+        Run-Tool $SignToolPath ('sign ' + $signParams + ' "' + $helperPath + '"') 'sign-privileged.log'
+        if ((Get-AuthenticodeSignature -LiteralPath $helperPath).Status -ne 'Valid') { throw '系统组件签名核验失败。' }
+    }
     if (-not $InnoCompiler) {
         foreach ($candidate in @((Join-Path ${env:ProgramFiles} 'Inno Setup 7\ISCC.exe'),(Join-Path ${env:LOCALAPPDATA} 'Programs\Inno Setup 7\ISCC.exe'))) {
             if (Test-Path -LiteralPath $candidate) { $InnoCompiler = $candidate; break }
         }
     }
     if (-not $InnoCompiler) { throw '需要官方 Inno Setup 7 编译器；可先使用 -SkipInstaller。' }
-    Run-Tool $InnoCompiler ('/DAppVersion=' + $Version + ' /DPublishDir="' + $installStage + '" /DOutputDir="' + $OutputRoot + '" installer\ClickClean.iss') 'installer.log'
+    Run-Tool $InnoCompiler ('/DAppVersion=' + $Version + ' /DPublishDir="' + $installStage + '" /DPrivilegedDir="' + $PrivilegedPublishDir + '" /DOutputDir="' + $OutputRoot + '" installer\ClickClean.iss') 'installer.log'
     if ($signParams) {
         $installerFile = Join-Path $OutputRoot ('Click-Clean-' + $Version + '-win-x64-Setup.exe')
         Run-Tool $SignToolPath ('sign ' + $signParams + ' "' + $installerFile + '"') 'sign-installer.log'

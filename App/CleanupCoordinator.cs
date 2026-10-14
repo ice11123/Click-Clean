@@ -29,28 +29,31 @@ internal sealed class CleanupCoordinator(Store store, IMemoryApi memory, Automat
     public void RefreshTimeout()
     {
         if (Busy && !observing && operationClock.Elapsed.TotalSeconds >= 60)
-            Report($"{currentStep}耗时较长，仍在等待系统返回；可取消后续步骤。", "等待 · " + currentStep);
+            Report("仍在等待系统返回", "等待 · " + currentStep);
     }
     public async Task RunRoutineAsync(string trigger, bool automatic, AutomationEnvironment environment)
     {
         if (disposed || Busy || automatic && store.Settings.AutomationNeedsConfirmation) return;
-        if (automatic)
-        {
-            var a = store.Settings.Automation;
-            var deferred = a.PauseFullscreen && environment.Fullscreen ? "全屏应用正在使用" :
-                a.PauseDiskBusy && environment.DiskBusy != false ? "磁盘繁忙或状态暂不可用" : null;
-            if (deferred is not null) { automation.DeferAttempt(trigger.Contains("定时", StringComparison.Ordinal), deferred); Changed?.Invoke(); return; }
-        }
+        var a = store.Settings.Automation;
         MemorySnapshot? snapshot = null;
-        try { snapshot = memory.Read(); } catch (Exception ex) { store.Log("压力检查失败：" + ex.Message); }
-        var systemMode = store.Settings.Automation.TriggerMode == AutomaticTriggerMode.SystemPressure;
-        var plan = automatic && systemMode && environment.LowMemory != true
-            ? new RoutineCleanupPlan([], "系统未报告低内存，未执行自动整理。")
-            : RoutineCleanupPolicy.Evaluate(snapshot, store.Settings.Automation.ThresholdPercent, automatic && !systemMode);
+        bool? low = environment.LowMemory, high = null;
+        try {
+            if (memory is IMemoryPerformanceApi performance) { var pressure = performance.ReadPressure(); snapshot = pressure.Memory; low = pressure.LowMemory; high = pressure.HighMemory; }
+            else snapshot = memory.Read();
+        } catch (Exception ex) { low = high = null; store.Log("压力检查失败：" + ex.Message); }
+        var plan = RoutineCleanupPolicy.Evaluate(snapshot, a.ThresholdPercent, automatic && a.TriggerMode == AutomaticTriggerMode.Percentage, low, high);
         if (plan.Skipped)
         {
-            Report(plan.Message); DockResult?.Invoke(snapshot is null ? "状态未知 · 未整理" : "无需整理");
+            Report(plan.Message); DockResult?.Invoke(snapshot is null || low is null || high is null || low == true && high == true ? "状态暂不可用" : "无需整理");
             if (automatic) automation.RecordSkipped();
+            return;
+        }
+        // 快捷操作保护正在进行的任务；高级手动操作另有显式风险确认。
+        var deferred = environment.Fullscreen ? "全屏应用正在使用" :
+            a.PauseDiskBusy && environment.DiskBusy != false ? "磁盘繁忙或状态暂不可用" : null;
+        if (deferred is not null) {
+            if (automatic) automation.DeferAttempt(trigger.Contains("定时", StringComparison.Ordinal), deferred);
+            Report(deferred, "暂缓整理");
             return;
         }
         await RunAsync(plan.Commands, trigger, automatic);
@@ -62,27 +65,30 @@ internal sealed class CleanupCoordinator(Store store, IMemoryApi memory, Automat
         if (selected.Length == 0) { Report("请至少选择一个整理项目。"); return; }
         StopObservation("新整理已开始，旧持续观测停止。");
         cancellation = new(); activeAutomatic = automatic; CanCancel = true; observing = false;
-        operationClock.Restart(); Report("正在准备权限…", "准备整理…");
-        var success = false; var executed = false;
+        operationClock.Restart(); Report("正在准备整理…", "准备整理…");
+        var success = false; var executed = false; var skipped = false;
         try
         {
             var result = await engine.RunAsync(selected, command => dispatcher.Invoke(() => {
-                executed = true; currentStep = Labels.Name(command);
-                Report($"{Array.IndexOf(selected, command) + 1}/{selected.Length} · {currentStep}", $"{Array.IndexOf(selected, command) + 1}/{selected.Length} {currentStep}");
+                currentStep = Labels.Name(command);
+                var stepText = $"{Array.IndexOf(selected, command) + 1}/{selected.Length} · {currentStep}";
+                Report(stepText, stepText);
             }), cancellation.Token, preview ? TimeSpan.FromMilliseconds(20) : TimeSpan.FromSeconds(3), () => dispatcher.Invoke(() => {
-                observing = true; Report("系统调用已返回，正在复测内存…", "复测内存…");
+                observing = true; Report("正在复测…", "复测内存…");
             }));
             result = result with { Trigger = preview ? "预览（模拟）" : trigger };
             latest = result; success = result.Success;
+            executed = result.BackgroundCleanup is { } background ? background.Attempted > 0 : result.Steps.Count > 0;
+            skipped = result.BackgroundCleanup is { Attempted: 0 } && result.Error is null && !result.Cancelled;
             try { store.Add(result); } catch (Exception ex) { store.Log("记录保存失败：" + ex); }
             ResultAvailable?.Invoke(result, true);
-            Report(result.Success ? result.ObservationError ?? "步骤已完成" : result.Error ?? "已取消尚未开始的步骤。");
-            if (result.Steps.Count > 0 && !result.Cancelled) BeginObservation(result);
+            Report(skipped ? "无需整理" : result.Success ? result.ObservationError ?? "步骤已完成" : result.Error ?? "已取消尚未开始的步骤。");
+            if (executed && !result.Cancelled) BeginObservation(result);
         }
         catch (Exception ex) { Report("整理失败：" + ex.Message); store.Log(ex.ToString()); DockResult?.Invoke("整理失败"); }
         finally
         {
-            automation.RecordCompletion(success, automatic);
+            if (skipped) automation.RecordSkipped(); else automation.RecordCompletion(success, automatic);
             if (!preview && executed) {
                 store.Settings.LastCleanupUtc = DateTimeOffset.UtcNow;
                 try { store.SaveSettings(); } catch (Exception ex) { store.Log("整理时间保存失败：" + ex); }

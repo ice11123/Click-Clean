@@ -14,10 +14,15 @@ public partial class MainWindow
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(UpdateChanged); return; }
         Presentation.UpdateText = updates.Status; Presentation.UpdateBusy = updates.Busy;
         Presentation.UpdateReady = updates.Ready; Presentation.UpdateAvailable = updates.Available && !updates.Ready;
+        Presentation.SystemComponentMissing = updates.SystemComponentMissing;
+        Presentation.RequiresInstaller = updates.RequiresInstaller;
         Presentation.Downloading = updates.Busy && updates.Phase == UpdatePhase.Downloading;
         Presentation.DownloadIndeterminate = updates.Progress is null; Presentation.DownloadProgress = updates.Progress ?? 0;
         var value = UpdatePresentation.Create(updates.Phase, updates.Available, updates.Ready, updates.Busy, IsBusy || applying);
-        Presentation.UpdateVisible = value.Visible; Presentation.UpdateButton = value.ButtonText; Presentation.UpdateActionEnabled = value.Enabled;
+        Presentation.UpdateVisible = value.Visible || updates.RequiresInstaller;
+        Presentation.UpdateButton = updates.RequiresInstaller ? "下载安装包" : value.ButtonText;
+        Presentation.UpdateActionEnabled = updates.RequiresInstaller ? !updates.Busy && !applying : value.Enabled;
+        Presentation.RefreshLanguage();
     }
     private async Task ApplyUpdate()
     {

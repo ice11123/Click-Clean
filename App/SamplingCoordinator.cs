@@ -17,10 +17,14 @@ internal sealed class SamplingCoordinator : IDisposable
     private readonly DispatcherTimer timer = new(DispatcherPriority.Background);
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private bool ticking, disposed, failed;
-    private double lastEnvironment = -10, lastTheme = -30, nextUpdate = 21600;
+    private double lastEnvironment = -10, lastTheme = -30, lastBackground = -15, nextUpdate = 21600;
     public AutomationEnvironment Environment { get; private set; } = new();
+    public MemoryPressureSnapshot? Pressure { get; private set; }
+    public MemorySnapshot? Snapshot { get; private set; }
+    public string Error { get; private set; } = "";
     public double Seconds => timer.Interval.TotalSeconds;
     public event Action<MemorySnapshot?, string>? MemoryChanged;
+    public event Action<MemoryPressureSnapshot?>? PressureChanged;
     public event Action? AutomaticChanged;
     public event Action? ThemePoll;
     public SamplingCoordinator(Store store, IMemoryApi memory, CleanupCoordinator cleanup, AutomationPolicy automation, IApplicationUpdates updates,
@@ -37,13 +41,16 @@ internal sealed class SamplingCoordinator : IDisposable
     {
         if (disposed) return null;
         try {
-            var value = memory.Read();
+            var pressure = memory is IMemoryPerformanceApi performance ? performance.ReadPressure() : null;
+            var value = pressure?.Memory ?? memory.Read();
             if (value.Total == 0 || value.Total > long.MaxValue || value.Available > value.Total || value.Commit > long.MaxValue) throw new InvalidDataException("系统内存读数无效。");
-            failed = false; MemoryChanged?.Invoke(value, ""); return value;
+            Pressure = pressure ?? new(value, Environment.LowMemory, null); Snapshot = value; Error = "";
+            failed = false; PressureChanged?.Invoke(Pressure); MemoryChanged?.Invoke(value, ""); return value;
         }
         catch (Exception ex) {
             if (!failed) store.Log("实时内存读取失败：" + ex); failed = true;
-            MemoryChanged?.Invoke(null, "内存读数暂不可用：" + ex.Message); return null;
+            Pressure = null; Snapshot = null; Error = "内存读数暂不可用：" + ex.Message;
+            PressureChanged?.Invoke(null); MemoryChanged?.Invoke(null, Error); return null;
         }
     }
     public async Task<AutomationEnvironment> ReadEnvironment()
@@ -61,13 +68,21 @@ internal sealed class SamplingCoordinator : IDisposable
             if (clock.Elapsed.TotalSeconds - lastTheme >= 30) { ThemePoll?.Invoke(); lastTheme = clock.Elapsed.TotalSeconds; }
             var snapshot = Read(); cleanup.RefreshTimeout();
             if (!preview) {
+                // 闲置基线独立于自动开关；低频只读观察，不把一次CPU静止当作可整理证据。
+                if (!cleanup.Busy && memory is IMemoryPerformanceApi performance && clock.Elapsed.TotalSeconds - lastBackground >= 15) {
+                    lastBackground = clock.Elapsed.TotalSeconds;
+                    try { await Task.Run(performance.ObserveBackgroundProcesses); }
+                    catch (Exception ex) { store.Log("后台闲置观察不可用：" + ex.Message); }
+                    if (disposed || applying()) return;
+                }
                 var enabled = store.Settings.Automation.ThresholdEnabled || store.Settings.Automation.TimerEnabled;
-                if (enabled && !store.Settings.AutomationNeedsConfirmation && clock.Elapsed.TotalSeconds - lastEnvironment >= 5) {
+                if ((Pressure?.LowMemory == true || enabled && !store.Settings.AutomationNeedsConfirmation) && clock.Elapsed.TotalSeconds - lastEnvironment >= 5) {
                     lastEnvironment = clock.Elapsed.TotalSeconds; await ReadEnvironment(); if (disposed || applying()) return;
                 }
-                var reason = automation.Evaluate(snapshot?.Load, cleanup.Busy || updates.Busy || store.Settings.AutomationNeedsConfirmation, Environment);
+                var currentEnvironment = Pressure is { } value ? Environment with { LowMemory = value.LowMemory } : Environment;
+                var reason = automation.Evaluate(snapshot?.Load, cleanup.Busy || updates.Busy || store.Settings.AutomationNeedsConfirmation, currentEnvironment);
                 if (reason is not null) {
-                    var current = Environment with { Fullscreen = ForegroundActivity.IsFullscreen() };
+                    var current = currentEnvironment with { Fullscreen = ForegroundActivity.IsFullscreen() };
                     _ = cleanup.RunRoutineAsync(reason, true, current);
                 }
                 if (store.Settings.CheckUpdates && clock.Elapsed.TotalSeconds >= nextUpdate) {

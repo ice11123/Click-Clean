@@ -106,8 +106,9 @@ public partial class MiniIsland : Window
     public void RefreshStatus()
     {
         if (disposed) return;
-        StatusLabel.Text = status.Text;
-        AutomationProperties.SetName(CleanButton, status.Text + "；点击执行原版三步：裁剪工作集、刷新修改页、清理待机缓存");
+        StatusLabel.Text = Localization.Text(status.Text);
+        CleanButton.ToolTip = Localization.Text(status.Text);
+        AutomationProperties.SetName(CleanButton, Localization.Text(status.Text) + " · " + Localization.Text("点击底部岛，检测压力并整理闲置后台"));
         var dark = Application.Current.Resources["IslandBg"] is SolidColorBrush background && background.Color.R + background.Color.G + background.Color.B < 384;
         var color = SystemParameters.HighContrast ? SystemColors.WindowTextColor : status.Pressure switch {
             MemoryPressureBand.Low => dark ? Color.FromRgb(112, 207, 164) : Color.FromRgb(35, 122, 87),

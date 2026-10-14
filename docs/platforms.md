@@ -5,7 +5,7 @@
 | 平台 | 构建与发布 | 验证边界 |
 | --- | --- | --- |
 | Windows 11 x64 | 正式安装/便携/更新包 | 核心模拟、WPF界面与更新测试；本轮不重做全系统整理 |
-| Windows 11 x64上的x86进程 | 独立试验便携包 | 本机可做32位启动、界面及只读探针；三步整理仍未专门验收 |
+| Windows 11 x64上的x86进程 | 独立试验便携包 | 本机可做32位启动、界面及只读探针；不提供高级系统组件 |
 | Linux / macOS | 当前不能直接打包发布 | 现有WPF界面及kernel32、user32、ntdll等API不可直接迁移 |
 
 [Microsoft WPF说明](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/overview/)明确WPF仅在Windows运行；[Windows位数说明](https://support.microsoft.com/en-au/windows/experience/compatibility/32-bit-and-64-bit-windows-frequently-asked-questions)说明Windows 11没有32位版本。

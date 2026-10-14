@@ -20,6 +20,13 @@ internal static class RebuiltUiCheck
         async Task Settle() { await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle); window.UpdateLayout(); }
         async Task Wait(Func<bool> condition) { var timer = Stopwatch.StartNew(); while (!condition() && timer.Elapsed.TotalSeconds < 8) await Task.Delay(20); Assert(condition(), "异步状态在期限内完成"); }
         var state = window.Presentation; window.DesktopIsland?.PreviewReveal(false);
+        var chooser = new LanguageWindow("zh-CN") { Owner = window, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        chooser.Loaded += (_, _) => chooser.Dispatcher.BeginInvoke(() => {
+            ((ComboBox)chooser.FindName("Languages")).SelectedIndex = 1;
+            MainWindow.Capture(chooser, Path.Combine(output, "first-language.png"));
+            Descendants(chooser).OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        });
+        Assert(chooser.ShowDialog() == true && chooser.SelectedLanguage == "en-US", "首次语言选择对话框可选择English并确认，不改变既有设置");
         Assert(store.Settings.Theme == "light" && store.Settings.MiniIsland && !store.Settings.Startup, "新安装浅色、岛开启、登录启动关闭");
         Assert(!store.Settings.Automation.ThresholdEnabled && !store.Settings.Automation.TimerEnabled && store.Settings.Automation.ThresholdPercent == 55, "自动默认关闭，门槛55保留");
         Assert(Control<CheckBox>("StartupCheck").IsEnabled == !BuildInfo.ExperimentalX86 && Control<CheckBox>("UpdateCheck").IsEnabled == !BuildInfo.ExperimentalX86, "仅正式版开放登录启动及更新偏好，32位试验控件禁用");
@@ -33,21 +40,27 @@ internal static class RebuiltUiCheck
         Assert(state.Load != "—" && !state.MemoryFailed, "读数恢复原位显示真实数据");
         memory.Available = 28UL << 30; var history = store.History.Count; var last = store.Settings.LastCleanupUtc;
         Click("CleanButton"); Click("CleanButton"); await Task.Delay(80); await Settle();
+        Assert(!window.IsBusy && memory.Calls.Count == 0 && store.History.Count == history && state.OperationVisible, "无实际压力不执行整理、不新增假成功记录");
+        memory.LowMemory = null; memory.HighMemory = null; Click("CleanButton"); await Settle();
+        Assert(memory.Calls.Count == 0 && !state.PressureKnown, "未知压力不是健康或成功，安全跳过");
+        memory.LowMemory = true; memory.HighMemory = false; environment.State = new(LowMemory: true, DiskBusy: false);
+        memory.Available = 12UL << 30;
+        Click("CleanButton"); Click("CleanButton"); await Task.Delay(80); await Settle();
         Assert(state.OperationVisible && Control<Button>("CancelButton").IsVisible && !Control<Button>("CleanButton").IsEnabled, "运行时实际步骤和取消入口可见，主按钮禁止重复执行");
         window.RenderTo(Path.Combine(output, "light-working.png")); await Wait(() => !window.IsBusy);
-        Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()) && store.History.Count == history + 1 && store.Settings.LastCleanupUtc == last, "低占用手动仍执行2/3/4，重复点击无重复任务，预览不更改实机整理时间");
+        Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.BackgroundWorkingSets }) && memory.Privileges == 0 && store.History.Count == history + 1 && store.Settings.LastCleanupUtc == last, "真实压力日常入口仅后台整理且不提权，重复点击不重复执行，模拟不改实机时间");
         await Task.Delay(300);
-        Assert(store.History[0].Sustained is not null && state.Recent?.Delta.StartsWith("复测可用") == true, "3秒复测优先、30秒观测只补充同条模拟记录");
+        Assert(store.History[0].Sustained is not null && state.Recent?.Delta == "已整理 1 个后台", "后台结果只显示实际处理数量，持续观测补充同条模拟记录");
         memory.Calls.Clear(); memory.FailureCommand = MemoryCommand.ModifiedPages;
-        Click("CleanButton"); await Wait(() => !window.IsBusy);
+        Command("custom-run"); await Wait(() => !window.IsBusy);
         Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages }) && state.Recent?.Outcome == "部分完成", "第二步失败停止第三步，呈现部分完成");
         Assert(state.Recent!.Details.Contains("0xC0000022"), "结果详情保留真实模拟返回码");
         await Settle();
         Assert(state.OperationVisible && Control<TextBlock>("StatusText").IsVisible && state.Recent.HomeOutcome.Contains("部分完成"), "简化首页保留失败原因和部分完成，不伪装成功");
         window.RenderTo(Path.Combine(output, "light-partial-failure.png"));
-        memory.FailureCommand = null; memory.Calls.Clear(); Click("CleanButton"); await Task.Delay(80); Click("CancelButton"); await Wait(() => !window.IsBusy);
+        memory.FailureCommand = null; memory.Calls.Clear(); Command("custom-run"); await Task.Delay(80); Click("CancelButton"); await Wait(() => !window.IsBusy);
         Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets }) && state.Recent?.Outcome == "已取消", "取消等待当前步骤返回，不执行后续步骤");
-        Click("CleanButton"); await Wait(() => !window.IsBusy);
+        Command("custom-run"); await Wait(() => !window.IsBusy);
         var blocker = Path.Combine(store.Root, "history.json.tmp");
         Directory.CreateDirectory(blocker);
         try {
@@ -60,12 +73,17 @@ internal static class RebuiltUiCheck
         memory.Calls.Clear(); environment.State = new(Fullscreen: true); await Automatic(); Assert(memory.Calls.Count == 0 && state.Automatic.Contains("全屏"), "自动入口在全屏时暂缓");
         environment.State = new(DiskBusy: true); await Automatic(); Assert(memory.Calls.Count == 0, "自动入口磁盘忙碌不执行");
         environment.State = new(DiskBusy: null); await Automatic(); Assert(memory.Calls.Count == 0, "自动入口未知磁盘状态不误认空闲");
-        environment.State = new(); memory.Available = 28UL << 30; await Automatic(); Assert(memory.Calls.Count == 0, "自动低于55门槛不新增假整理");
-        memory.Available = (32UL << 30) * 450 / 1000; await Automatic(); Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()), "自动达到55门槛仍执行原版三步");
+        environment.State = new(DiskBusy: false); memory.LowMemory = false; memory.HighMemory = true; memory.Available = 28UL << 30;
+        await Automatic(); Assert(memory.Calls.Count == 0, "自动无压力不新增假整理");
+        memory.Available = (32UL << 30) * 450 / 1000; await Automatic(); Assert(memory.Calls.Count == 0, "达到55检查门槛不能替代实际低内存信号");
         memory.Calls.Clear(); store.Settings.AutomationNeedsConfirmation = true; await Automatic(); Assert(memory.Calls.Count == 0, "旧自动规则待确认时安全暂停"); store.Settings.AutomationNeedsConfirmation = false;
-        store.Settings.Automation = store.Settings.Automation with { TriggerMode = AutomaticTriggerMode.SystemPressure }; environment.State = new(LowMemory: true); memory.Available = 28UL << 30;
-        await Automatic(); Assert(memory.Calls.SequenceEqual(Enum.GetValues<MemoryCommand>()), "系统压力模式不套用百分比门槛");
-        store.Settings.Automation = new(); environment.State = new(); state.Settings.Draft.Load(store.Settings.Automation);
+        store.Settings.Automation = store.Settings.Automation with { TriggerMode = AutomaticTriggerMode.SystemPressure }; environment.State = new(LowMemory: true, DiskBusy: false); memory.Available = 28UL << 30; memory.LowMemory = true; memory.HighMemory = false;
+        await Automatic(); Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.BackgroundWorkingSets }), "系统压力模式仅后台定向整理，不套百分比门槛且不执行高级三步");
+        memory.BackgroundCompleted = 0; memory.Calls.Clear(); var previousResult = store.History[0].Id;
+        Click("CleanButton"); await Wait(() => memory.Calls.Count > 0); await Wait(() => !window.IsBusy && store.History[0].Id != previousResult);
+        Assert(state.Recent?.Outcome == "无需整理", "没有实际处理对象不伪装成完成或加速");
+        memory.BackgroundCompleted = 1;
+        store.Settings.Automation = new() { TriggerMode = AutomaticTriggerMode.Percentage }; environment.State = new(); memory.LowMemory = false; memory.HighMemory = true; state.Settings.Draft.Load(store.Settings.Automation);
         foreach (var name in new[] { "RepositoryLinkButton", "BlogLinkButton", "AuthorLinkButton" }) Click(name);
         Assert(links.Select(u => u.AbsoluteUri).SequenceEqual(new[] { "https://github.com/ice11123/Click-Clean", "https://ice11123.github.io/blog_test2/", "https://github.com/ice11123" }), "三个外链分别打开已确认地址（注入打开器）");
         var icons = new[] { "RepositoryLinkButton", "BlogLinkButton", "AuthorLinkButton" }.Select(n => Descendants(Control<Button>(n)).OfType<System.Windows.Shapes.Path>().Single().Data.ToString()).ToArray();
@@ -90,13 +108,23 @@ internal static class RebuiltUiCheck
         Command("settings-appearance"); await Settle(); Control<CheckBox>("IslandCheck").IsChecked = false; await Settle(); Assert(!store.Settings.MiniIsland && window.DesktopIsland?.IsVisible == false, "关闭岛即时保存并停止可见入口");
         Control<CheckBox>("IslandCheck").IsChecked = true; await Settle(); window.DesktopIsland?.PreviewReveal(false); Assert(store.Settings.MiniIsland && window.DesktopIsland?.IsVisible == true, "重新开启岛与主窗口共用状态");
         var before = new MemorySnapshot(32UL << 30, (12UL << 30) + (768UL << 20), 21UL << 30, 48UL << 30);
-        var sample = new CleanupResult(DateTimeOffset.Now, before, before with { Available = before.Available + (1UL << 30) }, Enum.GetValues<MemoryCommand>().Select(c => new StepResult(c, 0, 0.1)).ToList(), false, null, 3.1) {
+        var sample = new CleanupResult(DateTimeOffset.Now, before, before with { Available = before.Available + (1UL << 30) }, new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache }.Select(c => new StepResult(c, 0, 0.1)).ToList(), false, null, 3.1) {
             Trigger = "预览（模拟）", FollowUp = before with { Available = before.Available + (768UL << 20) }, FollowUpSeconds = 3, Sustained = before with { Available = before.Available + (512UL << 20) }, SustainedSeconds = 30
         };
-        store.Add(sample); memory.Available = before.Available; window.ShowResult(sample, false); Command("overview"); await Task.Delay(1100); await Settle();
+        // 注入完整成功场景时一并设置其终态，不能沿用上一轮“无需整理”的操作提示。
+        store.Add(sample); memory.Available = before.Available; window.ShowResult(sample, false); state.Operation = "步骤已完成"; Command("overview"); await Task.Delay(1100); await Settle();
         var width = window.Width; var height = window.Height;
         foreach (var theme in new[] { "light", "dark" }) {
             store.Settings.Theme = theme; window.ApplyTheme(); await Settle();
+            for (var iteration = 0; iteration < 3; iteration++) {
+                Click("HistoryButton"); await Settle(); Click("OverviewButton"); await Settle();
+                Assert(state.Overview && !Control<Button>("HistoryButton").IsKeyboardFocused && !Control<Button>("DiagnosticsButton").IsKeyboardFocused,
+                    "侧栏往返不把另一页导航按钮错误恢复为内容焦点：" + theme);
+            }
+            var navigation = new[] { "OverviewButton", "HistoryButton", "DiagnosticsButton", "SettingsButton" }.Select(Control<Button>).ToArray();
+            Assert(navigation.All(button => ((Border)button.Template.FindName("Shell", button)).CornerRadius.TopLeft == 10 &&
+                button.Template.FindName("FocusRing", button) is null && button.FocusVisualStyle == window.FindResource("SidebarKeyboardFocus")),
+                "侧栏选择和悬停共用10 DIP几何，键盘提示使用同色焦点样式而非常驻黑框：" + theme);
             Assert(window.NativeThemeApplied, "原生标题栏主题应用成功：" + theme);
             Assert(Descendants(window).OfType<TextBlock>().Where(t => t.IsVisible && (t.Style == window.FindResource("PageTitle") || t.Style == window.FindResource("GroupTitle"))).All(t => t.Foreground is SolidColorBrush brush && brush.Color == ColorOf("Text")), "实际首页标题继承主题前景色：" + theme);
             Assert(Contrast(ColorOf("Muted"), ColorOf("Bg")) >= 4.5 && Contrast(ColorOf("AccentText"), ColorOf("Accent")) >= 4.5, "正文和主按钮基础对比度合格：" + theme);
@@ -114,8 +142,8 @@ internal static class RebuiltUiCheck
             Assert(resultOption.Style == window.FindResource("AcrylicOption") && ((Border)resultOption.Template.FindName("Material", resultOption)).CornerRadius.TopLeft == 12, "结果入口使用统一12 DIP磨砂圆角模板：" + theme);
             var scroller = Control<ScrollViewer>("MainContent");
             Assert(scroller.ScrollableHeight < 1, $"默认窗口读数、操作、成功结果首屏完整：{theme}，内容{scroller.ExtentHeight:0.0}，视口{scroller.ViewportHeight:0.0}");
-            var primary = Control<Button>("CleanButton"); var primaryText = Descendants(primary).OfType<TextBlock>().First(t => t.Text == "一键整理");
-            Assert(primary.ActualWidth >= 160 && primary.ActualHeight >= 44 && primaryText.FontSize >= 16, "主操作尺寸与实际字号突出：" + theme);
+            var primary = Control<Button>("CleanButton"); var primaryText = Descendants(primary).OfType<TextBlock>().First(t => t.Text == "优化内存");
+            Assert(primary.ActualWidth >= 160 && primary.ActualHeight >= 44 && primaryText.FontSize >= 15, "主操作尺寸与实际字号突出：" + theme);
             Assert(state.AutomaticBrief == "已关闭  ›" && !state.OperationVisible, "自动状态简短，完成状态不与结果重复：" + theme);
             Assert(((SolidColorBrush)primaryText.Foreground).Color == ColorOf("AccentText"), "主按钮实际文字使用白色而非正文色：" + theme);
             window.RenderTo(Path.Combine(output, theme + "-main.png"));
@@ -149,11 +177,33 @@ internal static class RebuiltUiCheck
                 window.PreviewDockIdle(before); island.PreviewReveal(true); await Settle(); MainWindow.Capture(island, Path.Combine(output, theme + "-island-idle.png"));
                 Assert(island.BreathingActive && window.SamplingSeconds == 1, "岛浮出呼吸并使用1秒采样：" + theme);
                 window.SetDockOperation("2/3 刷新修改页"); island.IsWorking = true; await Settle(); MainWindow.Capture(island, Path.Combine(output, theme + "-island-working.png")); Assert(island.BackgroundMotionActive, "运行态岛有局部背景动画：" + theme);
-                island.IsWorking = false; window.ShowResult(sample); await Settle(); Assert(((TextBlock)island.FindName("StatusLabel")).Text.StartsWith("完成"), "岛展示真实模拟成果：" + theme); await Task.Delay(2100); Assert(((TextBlock)island.FindName("StatusLabel")).Text.StartsWith("内存"), "岛成果2秒后恢复实时读数：" + theme);
+                island.IsWorking = false; window.ShowResult(sample); await Settle(); Assert(((TextBlock)island.FindName("StatusLabel")).Text == state.Recent!.Outcome, "岛展示实际步骤终态而不把可用数字上涨当成加速：" + theme); await Task.Delay(2100); Assert(((TextBlock)island.FindName("StatusLabel")).Text.StartsWith("内存"), "岛成果2秒后恢复实时读数：" + theme);
                 store.Settings.ReduceMotion = true; window.ApplyTheme(); await Settle(); Assert(!island.BreathingActive && !island.BackgroundMotionActive, "减少动画立即停慢循环：" + theme);
                 store.Settings.ReduceMotion = false; window.ApplyTheme(); island.PreviewReveal(false); Assert(!island.BreathingActive && !island.BackgroundMotionActive, "岛收起无动画时钟：" + theme);
             }
         }
+        Command("settings-appearance"); await Settle();
+        Control<ComboBox>("LanguageCombo").SelectedIndex = 1; await Settle();
+        Assert(store.Settings.Language == "en-US" && store.Settings.LanguageChosen && Localization.IsEnglish, "设置选择English立即保存并切换语言");
+        Assert(Control<TextBlock>("SettingsHeading").Text == "General & appearance", "设置标题实时切成English");
+        var reloaded = new Store(store.Root);
+        Assert(reloaded.Settings.Language == "en-US" && reloaded.Settings.LanguageChosen && reloaded.Settings.SchemaVersion == 5, "设置重载和升级不重置语言或再弹首次选择");
+        foreach (var theme in new[] { "light", "dark" }) {
+            store.Settings.Theme = theme; window.ApplyTheme();
+            foreach (var page in new[] { "overview", "history", "diagnostics", "settings" }) {
+                Command(page); await Settle(); window.RenderTo(Path.Combine(output, "english-" + theme + "-" + page + ".png"));
+                var chinese = Descendants(window).OfType<TextBlock>().Where(t => t.IsVisible && System.Text.RegularExpressions.Regex.IsMatch(t.Text, "[\\u4e00-\\u9fff]")).Select(t => t.Text).ToArray();
+                Assert(chinese.All(t => t.Contains("离子怪") || t.Contains("测试进程") || t.Contains("模拟") || t.Contains("预览")), "English页面无未翻译静态文案：" + theme + "/" + page + " " + string.Join(" | ", chinese));
+            }
+            Command("settings-appearance"); await Settle(); window.RenderTo(Path.Combine(output, "english-" + theme + "-appearance.png"));
+            if (window.DesktopIsland is { } island) {
+                window.PreviewDockIdle(before); island.PreviewReveal(true); await Settle();
+                Assert(((TextBlock)island.FindName("StatusLabel")).Text.StartsWith("Memory"), "English岛实时文字即时翻译：" + theme);
+                MainWindow.Capture(island, Path.Combine(output, "english-" + theme + "-island.png")); island.PreviewReveal(false);
+            }
+        }
+        Command("settings-appearance"); await Settle(); Control<ComboBox>("LanguageCombo").SelectedIndex = 0; await Settle(); Command("overview");
+        Assert(!Localization.IsEnglish && state.CleanLabel == "优化内存", "切回中文恢复动态文案，不残留English");
         window.ShowResult(new(DateTimeOffset.Now, before, null, [new(MemoryCommand.WorkingSets, 0, 0.1)], false, "模拟：快照不可用", 0.1));
         Assert(state.Recent!.Delta.Contains("未知") && state.Recent.Observation.Contains("无记录"), "缺失观测不伪造0或持续观测中");
         window.ShowResult(sample with { FollowUp = before with { Available = before.Available - (256UL << 20) } }); Assert(state.Recent!.Delta.Contains("−"), "负值观测照实呈现");

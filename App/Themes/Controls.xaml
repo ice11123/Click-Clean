@@ -31,7 +31,22 @@
   <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Background" Value="{DynamicResource Accent}"/><Setter Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="local:PressFeedback.Enabled" Value="True"/><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource AccentHover}"/></Trigger></Style.Triggers></Style>
   <Style x:Key="TextButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Background" Value="Transparent"/><Setter Property="BorderBrush" Value="Transparent"/><Setter Property="Padding" Value="6,5"/><Setter Property="MinHeight" Value="32"/></Style>
   <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource TextButton}"><Setter Property="Padding" Value="12,8"/><Setter Property="MinHeight" Value="40"/></Style>
-  <Style x:Key="SidebarButton" TargetType="Button" BasedOn="{StaticResource TextButton}"><Setter Property="Padding" Value="12,10"/><Setter Property="MinHeight" Value="44"/><Setter Property="HorizontalContentAlignment" Value="Left"/></Style>
+  <Style x:Key="SidebarKeyboardFocus" TargetType="Control"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Control"><Border BorderBrush="{DynamicResource Accent}" BorderThickness="1.5" CornerRadius="10" IsHitTestVisible="False"/></ControlTemplate></Setter.Value></Setter></Style>
+  <Style x:Key="SidebarButton" TargetType="Button" BasedOn="{StaticResource TextButton}">
+    <Setter Property="Padding" Value="12,10"/><Setter Property="MinHeight" Value="44"/><Setter Property="HorizontalContentAlignment" Value="Left"/>
+    <!-- WPF仅在键盘导航时显示FocusVisualStyle；鼠标点击不会留下另一套黑色焦点框。 -->
+    <Setter Property="FocusVisualStyle" Value="{StaticResource SidebarKeyboardFocus}"/>
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+      <Border x:Name="Shell" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10" Padding="{TemplateBinding Padding}">
+        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" RecognizesAccessKey="True"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Shell" Property="Background" Value="{DynamicResource Tint}"/></Trigger>
+        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Shell" Property="Opacity" Value="0.8"/></Trigger>
+        <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Shell" Property="Opacity" Value="0.48"/></Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate></Setter.Value></Setter>
+  </Style>
   <Style x:Key="ListButton" TargetType="Button" BasedOn="{StaticResource TextButton}"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0,12"/></Style>
   <Style x:Key="AcrylicOption" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
     <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="16,12"/>

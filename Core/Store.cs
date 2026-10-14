@@ -4,7 +4,9 @@ namespace ClickClean.Core;
 
 public sealed class UserSettings
 {
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
+    public string Language { get; set; } = "zh-CN";
+    public bool LanguageChosen { get; set; }
     public bool AutomationNeedsConfirmation { get; set; }
     public bool Startup { get; set; }
     public string Theme { get; set; } = "light";
@@ -29,9 +31,18 @@ public sealed class UserSettings
             AutomationNeedsConfirmation |= Automation?.ThresholdEnabled == true || Automation?.TimerEnabled == true;
             SchemaVersion = 4;
         }
+        if (SchemaVersion < 5)
+        {
+            // 旧全系统自动规则必须重新确认；不把用户的授权直接移交给新策略。
+            AutomationNeedsConfirmation |= Automation?.ThresholdEnabled == true || Automation?.TimerEnabled == true;
+            if (Automation is not null) Automation = Automation with { TriggerMode = AutomaticTriggerMode.SystemPressure, FullCleanup = false };
+            SchemaVersion = 5;
+        }
+        Language = Language == "en-US" ? "en-US" : "zh-CN";
         Theme = Theme is "light" or "dark" ? Theme : "system";
         Automation = (Automation ?? new()).Validated();
-        SelectedSteps = (SelectedSteps ?? []).Where(Enum.IsDefined).Distinct().Order().ToArray();
+        // 常规后台优化不是高级全系统操作，禁止通过设置文件把它混入自定义步骤。
+        SelectedSteps = (SelectedSteps ?? []).Where(command => command is MemoryCommand.WorkingSets or MemoryCommand.ModifiedPages or MemoryCommand.StandbyCache).Distinct().Order().ToArray();
     }
 }
 
@@ -75,6 +86,8 @@ public sealed class Store
             if (new FileInfo(path).Length > 1_000_000) throw new IOException("设置文件过大。");
             using var document = JsonDocument.Parse(File.ReadAllText(path));
             var settings = document.RootElement.Deserialize<UserSettings>() ?? new();
+            // 已有用户不重新询问语言，缺少语言字段的旧安装保持中文。
+            if (!document.RootElement.TryGetProperty(nameof(UserSettings.LanguageChosen), out _)) settings.LanguageChosen = true;
             // 老文件没有 schema 时也必须走升级确认，不能误认成新安装。
             if (!document.RootElement.TryGetProperty(nameof(UserSettings.SchemaVersion), out _)) settings.SchemaVersion = 1;
             return settings;
@@ -110,6 +123,7 @@ public sealed class Store
         result.Before is not null && result.Steps is not null && result.Steps.Count <= 3 &&
         result.Steps.All(s => s is not null && Enum.IsDefined(s.Command) && double.IsFinite(s.Seconds) && s.Seconds >= 0) &&
         double.IsFinite(result.Seconds) && result.Seconds >= 0 &&
+        (result.BackgroundCleanup is null || ValidBackgroundSummary(result.BackgroundCleanup)) &&
         result.Before.Total <= long.MaxValue && result.Before.Available <= result.Before.Total &&
         result.Before.Commit <= long.MaxValue &&
         (result.After is null || result.After.Total <= long.MaxValue && result.After.Available <= result.After.Total && result.After.Commit <= long.MaxValue) &&
@@ -119,6 +133,12 @@ public sealed class Store
         (result.Sustained is null || result.Sustained.Total > 0 && result.Sustained.Total <= long.MaxValue && result.Sustained.Available <= result.Sustained.Total && result.Sustained.Commit <= long.MaxValue) &&
         (result.SustainedSeconds is null || double.IsFinite(result.SustainedSeconds.Value) && result.SustainedSeconds >= 0) &&
         (result.Sustained is null || result.SustainedSeconds is not null);
+    private static bool ValidBackgroundSummary(BackgroundCleanupSummary value) =>
+        value.Examined is >= 0 and <= 256 && value.Eligible >= 0 && value.Eligible <= value.Examined &&
+        value.Attempted is >= 0 and <= 3 && value.Completed >= 0 && value.Completed <= value.Attempted && value.Failed >= 0 && value.Failed <= value.Attempted &&
+        value.Completed + value.Failed == value.Attempted && Enum.IsDefined(value.StopReason) &&
+        value.Failures is not null && value.Failures.Count == value.Failed &&
+        value.Failures.All(failure => failure is not null && failure.ProcessId > 0 && failure.Win32Error >= 0);
     private void Save(string name, object value)
     {
         lock (gate)

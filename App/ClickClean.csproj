@@ -13,6 +13,11 @@
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\Core\ClickClean.Core.csproj" /></ItemGroup>
   <ItemGroup><Resource Include="Assets\ClickClean.png" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Privileged\Protocol.cs" Link="Security\Protocol.cs" />
+    <Compile Include="..\Privileged\ProtectedInstallation.cs" Link="Security\ProtectedInstallation.cs" />
+    <Compile Include="..\Privileged\PeerIdentity.cs" Link="Security\PeerIdentity.cs" />
+  </ItemGroup>
   <ItemGroup><PackageReference Include="Velopack" Version="1.2.158" />
     <AssemblyMetadata Include="UpdateRepository" Value="$(RepositoryUrl)" />
     <AssemblyMetadata Include="BuildFlavor" Value="experimental-x86" Condition="'$(RuntimeIdentifier)' == 'win-x86'" />

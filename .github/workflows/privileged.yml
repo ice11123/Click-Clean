@@ -1,0 +1,52 @@
+name: Protected system component
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-aot:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          global-json-file: global.json
+      - name: Build fixed-command Native AOT component
+        shell: pwsh
+        run: |
+          dotnet publish Privileged/ClickClean.Privileged.csproj -c Release -r win-x64 --self-contained true -o ./privileged-publish
+          if ($LASTEXITCODE -ne 0) { throw 'Native AOT构建失败' }
+          $helper = Resolve-Path ./privileged-publish/ClickClean.Privileged.exe
+          $job = Start-Process $helper -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
+          if (-not $job.WaitForExit(30000)) { $job.Kill(); throw '协议自测超时' }
+          if ($job.ExitCode -ne 0) { throw '协议白名单与参数自测失败' }
+          [pscustomobject]@{ Commit = '${{ github.sha }}'; SHA256 = (Get-FileHash $helper -Algorithm SHA256).Hash.ToLowerInvariant(); Protocol = 1; NativeAot = $true } | ConvertTo-Json | Set-Content ./privileged-publish/build-origin.json -Encoding utf8
+      - name: Verify protected path and authenticated IPC without cleanup
+        shell: pwsh
+        run: |
+          $componentRoot = Join-Path $env:ProgramFiles 'Click-Clean'
+          if (Test-Path -LiteralPath $componentRoot) { throw '隔离runner存在冲突目录，拒绝覆盖' }
+          $component = New-Item -ItemType Directory -Path (Join-Path $componentRoot 'Privileged')
+          Copy-Item ./privileged-publish/ClickClean.Privileged.exe $component.FullName
+          icacls $componentRoot /reset /T /Q
+          if ($LASTEXITCODE -ne 0) { throw '系统组件ACL初始化失败' }
+          icacls $componentRoot /setowner '*S-1-5-32-544' /T /Q
+          if ($LASTEXITCODE -ne 0) { throw '系统组件owner初始化失败' }
+          dotnet publish Diagnostics/ClickClean.Preview.csproj -c Release -r win-x64 --self-contained true -o ./component-check
+          if ($LASTEXITCODE -ne 0) { throw '认证探针构建失败' }
+          $result = Join-Path $env:RUNNER_TEMP 'component-probe.json'
+          $job = Start-Process ./component-check/ClickClean.Preview.exe -ArgumentList "--component-probe `"$result`"" -PassThru -WindowStyle Hidden
+          if (-not $job.WaitForExit(60000)) { $job.Kill(); throw 'IPC认证探针超时' }
+          if ($job.ExitCode -ne 0) { Get-Content ([IO.Path]::ChangeExtension($result, '.failure.txt')); throw 'IPC认证探针失败' }
+          $probe = Get-Content $result -Raw | ConvertFrom-Json
+          if (-not $probe.Authenticated -or $probe.CommandsSent -ne 0) { throw '认证探针结果无效' }
+          Copy-Item $result ./privileged-publish/component-probe.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ClickClean-Privileged-${{ github.sha }}
+          path: |
+            privileged-publish/ClickClean.Privileged.exe
+            privileged-publish/build-origin.json
+            privileged-publish/component-probe.json
+          retention-days: 14

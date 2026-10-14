@@ -10,6 +10,17 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.SequenceEqual(new[] { "--memory-fixture" })) { ControlledMemoryExperiment.Child(); return; }
+        if (args.Length == 2 && args[0] == "--controlled-memory-experiment") {
+            RunUpdateCheck(() => ControlledMemoryExperiment.Run(args[1]), Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
+        if (args.Length == 2 && args[0] == "--component-probe") {
+            RunUpdateCheck(async () => {
+                var started = Stopwatch.GetTimestamp();
+                await ElevatedMemoryApi.ValidateSystemComponentAsync();
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { Authenticated = true, CommandsSent = 0, Seconds = Stopwatch.GetElapsedTime(started).TotalSeconds }));
+            }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
         if (args.Length == 2 && args[0] == "--architecture-check") {
             RunUpdateCheck(async () => {
                 var expectedX86 = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X86;
@@ -88,7 +99,7 @@ public static class Program
         {
             if (!WindowsMemoryApi.IsAdmin()) throw new InvalidOperationException("实测必须通过 UAC 以管理员运行诊断程序。");
             var initial = WindowsMemoryApi.ProfilePrivilegeEnabled();
-            var result = new MemoryEngine(new WindowsMemoryApi()).RunAsync(Enum.GetValues<MemoryCommand>()).GetAwaiter().GetResult();
+            var result = new MemoryEngine(new WindowsMemoryApi()).RunAsync(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache }).GetAwaiter().GetResult();
             var restored = WindowsMemoryApi.ProfilePrivilegeEnabled() == initial;
             File.WriteAllText(output, JsonSerializer.Serialize(new { Result = result, PrivilegeRestored = restored }, new JsonSerializerOptions { WriteIndented = true }));
             if (!result.Success || !restored) Environment.ExitCode = 1;

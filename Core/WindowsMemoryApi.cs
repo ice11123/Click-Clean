@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 namespace ClickClean.Core;
 
 [SupportedOSPlatform("windows")]
-public sealed class WindowsMemoryApi : IMemoryApi
+public sealed partial class WindowsMemoryApi : IMemoryApi, IMemoryPerformanceApi, IDisposable
 {
     public MemorySnapshot Read()
     {
@@ -76,6 +76,7 @@ public sealed class WindowsMemoryApi : IMemoryApi
 
     public int Execute(MemoryCommand command)
     {
+        if (command == MemoryCommand.BackgroundWorkingSets) return ExecuteBackgroundCleanup();
         if (!Enum.IsDefined(command)) throw new ArgumentOutOfRangeException(nameof(command));
         var value = (int)command;
         return NtSetSystemInformation(80, ref value, sizeof(int));

@@ -1,4 +1,5 @@
 using System.Security.Principal;
+using Microsoft.Win32;
 
 namespace ClickClean;
 
@@ -31,10 +32,15 @@ public partial class App : Application
         { MessageBox.Show("Click-Clean 仅支持 Windows 11 x64。", "平台不支持"); Shutdown(2); return; }
         if (e.Args.SequenceEqual(new[] { "--remove-startup" }))
         { if (BuildInfo.ExperimentalX86) { Shutdown(); return; } try { StartupTask.Set(false); Shutdown(); } catch { Shutdown(1); } return; }
-        if (e.Args.Any(a => a != "--tray") && !e.Args.SequenceEqual(new[] { "--exit" }))
+        if (e.Args.Any(a => a is not ("--tray" or "--language=zh-CN" or "--language=en-US")) && !e.Args.SequenceEqual(new[] { "--exit" }))
         { MessageBox.Show("不支持的启动参数。", "Click-Clean"); Shutdown(2); return; }
-        if (!WindowsMemoryApi.IsAdmin())
-        { MessageBox.Show("请双击 ClickClean.exe 并同意管理员授权。", "Click-Clean"); Shutdown(1); return; }
+        if (!e.Args.SequenceEqual(new[] { "--exit" }) && WindowsMemoryApi.IsAdmin())
+        {
+            var english = e.Args.Contains("--language=en-US");
+            MessageBox.Show(english ? "Click-Clean now runs without administrator rights. Close the old instance, then launch normally from the Start menu."
+                : "新版 Click-Clean 界面不再需要管理员权限。请关闭旧实例，通过开始菜单普通启动。", "Click-Clean");
+            Shutdown(1); return;
+        }
         try
         {
             using var identity = WindowsIdentity.GetCurrent();
@@ -53,6 +59,14 @@ public partial class App : Application
             var store = BuildInfo.ExperimentalX86
                 ? new Store(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClickCleanData-x86"))
                 : new Store();
+            if (!store.Settings.LanguageChosen)
+            {
+                using var installation = Registry.CurrentUser.OpenSubKey(@"Software\ClickClean");
+                var language = e.Args.FirstOrDefault(a => a.StartsWith("--language=", StringComparison.Ordinal))?[11..]
+                    ?? installation?.GetValue("InitialLanguage") as string;
+                if (language is "zh-CN" or "en-US")
+                { store.Settings.Language = language; store.Settings.LanguageChosen = true; store.SaveSettings(); }
+            }
             if (BuildInfo.ExperimentalX86) { store.Settings.Startup = false; store.Settings.CheckUpdates = false; }
             var recovery = new UpdateRecovery(store.Root); recovery.BeginLaunch();
             InstallationMetadata.RefreshVersion(store);

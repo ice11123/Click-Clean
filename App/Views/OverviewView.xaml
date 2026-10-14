@@ -1,37 +1,36 @@
-<UserControl x:Class="ClickClean.Views.OverviewView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:ClickClean">
+<UserControl x:Class="ClickClean.Views.OverviewView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:loc="clr-namespace:ClickClean">
   <ScrollViewer x:Name="MainContent">
     <StackPanel Margin="0,0,4,4">
-      <Grid Margin="0,0,0,24"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <TextBlock Text="内存整理" Style="{StaticResource PageTitle}" Margin="0" VerticalAlignment="Center"/>
-        <Button x:Name="MemoryDetailsButton" Grid.Column="1" Content="内存详情" Style="{StaticResource TextButton}" Foreground="{DynamicResource Muted}" Command="{Binding Command}" CommandParameter="memory-details"/>
+      <Grid Margin="0,0,0,18"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <TextBlock Text="{loc:Tr 内存整理}" Style="{StaticResource PageTitle}" Margin="0" VerticalAlignment="Center"/>
+        <Button x:Name="MemoryDetailsButton" Grid.Column="1" Content="{loc:Tr 内存详情}" Style="{StaticResource TextButton}" Foreground="{DynamicResource Muted}" Command="{Binding Command}" CommandParameter="memory-details"/>
       </Grid>
-      <Grid x:Name="Hero" Margin="0,4,0,10">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <Grid x:Name="Gauge" Width="176" Height="176" HorizontalAlignment="Center">
-          <Grid.Style><Style TargetType="Grid"><Setter Property="Grid.ColumnSpan" Value="1"/><Style.Triggers><DataTrigger Binding="{Binding Compact}" Value="True"><Setter Property="Grid.ColumnSpan" Value="2"/></DataTrigger></Style.Triggers></Style></Grid.Style>
-          <local:MemoryGauge x:Name="MemoryBar" Value="{Binding Percentage}" Track="{DynamicResource Line}" Fill="{DynamicResource Accent}" IsHitTestVisible="False" AutomationProperties.Name="物理内存实际占用比例"/>
-          <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><TextBlock x:Name="LoadText" Text="{Binding Load}" FontSize="48" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" TextWrapping="NoWrap"/><TextBlock Text="%" FontSize="18" Foreground="{DynamicResource Muted}" VerticalAlignment="Bottom" Margin="3,0,0,11"/></StackPanel>
-            <TextBlock Text="内存占用" Style="{StaticResource Caption}" HorizontalAlignment="Center"/>
-          </StackPanel>
-        </Grid>
-        <StackPanel x:Name="HeroAction" VerticalAlignment="Center" HorizontalAlignment="Center">
-          <StackPanel.Style><Style TargetType="StackPanel"><Setter Property="Grid.Column" Value="1"/><Setter Property="Margin" Value="24,0,0,0"/><Style.Triggers><DataTrigger Binding="{Binding Compact}" Value="True"><Setter Property="Grid.Column" Value="0"/><Setter Property="Grid.Row" Value="1"/><Setter Property="Grid.ColumnSpan" Value="2"/><Setter Property="Margin" Value="0,18,0,0"/></DataTrigger></Style.Triggers></Style></StackPanel.Style>
-          <TextBlock Text="可用内存" Style="{StaticResource Caption}"/>
-          <TextBlock x:Name="AvailableText" Text="{Binding Available}" FontSize="24" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" TextWrapping="NoWrap" Margin="0,4,0,4"/>
-          <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,20"><Run Text="共 "/><Run Text="{Binding Total}"/></TextBlock>
-          <Button x:Name="CleanButton" Content="{Binding CleanLabel}" Width="176" Height="48" FontSize="16" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanClean}" Command="{Binding Command}" CommandParameter="clean" ToolTip="裁剪全系统工作集、刷新修改页、清理待机缓存；可能短暂增加磁盘活动。" AutomationProperties.Name="一键整理：裁剪工作集、刷新修改页、清理待机缓存"/>
+      <Border x:Name="Hero" CornerRadius="20" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="24,20,24,20">
+        <StackPanel>
+          <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <Border x:Name="Gauge" Width="46" Height="46" CornerRadius="15" Background="{DynamicResource Surface}" Margin="0,0,14,0" VerticalAlignment="Top">
+              <Path Data="M 3,9 L 7,9 9,4 12,15 15,9 19,9" Stroke="{DynamicResource Accent}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Stretch="Uniform" Width="26" Height="22"/>
+            </Border>
+            <StackPanel Grid.Column="1">
+              <TextBlock x:Name="PressureTitle" Text="{Binding PressureTitle}" FontSize="25" FontWeight="SemiBold" LineHeight="32" AutomationProperties.LiveSetting="Polite"/>
+              <TextBlock x:Name="PressureHint" Text="{Binding PressureHint}" Style="{StaticResource Caption}" Margin="0,7,0,0" MaxWidth="410"/>
+            </StackPanel>
+          </Grid>
+          <Grid Margin="0,0,0,18"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock Text="{loc:Tr 内存占用}" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal"><TextBlock x:Name="LoadText" Text="{Binding Load}" FontSize="16" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular"/><TextBlock Text="%" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="3,0,0,0"/></StackPanel>
+          </Grid>
+          <Button x:Name="CleanButton" Content="{Binding CleanLabel}" Height="46" FontSize="15" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanClean}" Command="{Binding Command}" CommandParameter="clean" ToolTip="{loc:Tr 检测实际压力，只整理符合条件的闲置后台。}" AutomationProperties.Name="{loc:Tr 优化内存：先检测压力，再整理闲置后台}"/>
         </StackPanel>
-      </Grid>
-      <Grid MinHeight="36" Margin="0,0,0,18"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      </Border>
+      <Grid MinHeight="40" Margin="0,6,0,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <TextBlock x:Name="StatusText" Text="{Binding Operation}" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,12,0" Visibility="{Binding OperationVisible, Converter={StaticResource Visible}}" AutomationProperties.LiveSetting="Polite"/>
-        <Button x:Name="CustomButton" Grid.Column="1" Content="整理选项 ›" Style="{StaticResource TextButton}" Foreground="{DynamicResource Muted}" Visibility="{Binding CanClean, Converter={StaticResource Visible}}" Command="{Binding Command}" CommandParameter="custom"/>
+        <Button x:Name="CustomButton" Grid.Column="1" Content="{loc:Tr 整理选项 ›}" Style="{StaticResource TextButton}" Foreground="{DynamicResource Muted}" Visibility="{Binding CanClean, Converter={StaticResource Visible}}" Command="{Binding Command}" CommandParameter="custom"/>
         <Button x:Name="CancelButton" Grid.Column="1" Content="{Binding CancelText}" Visibility="{Binding Busy, Converter={StaticResource Visible}}" IsEnabled="{Binding CanCancel}" Style="{StaticResource TextButton}" Command="{Binding Command}" CommandParameter="cancel-clean"/>
       </Grid>
       <TextBlock x:Name="MemoryError" Text="{Binding MemoryError}" Visibility="{Binding MemoryFailed, Converter={StaticResource Visible}}" Style="{StaticResource Caption}" Margin="0,0,0,12"/>
       <Border x:Name="ResultCard" Visibility="{Binding HasRecent, Converter={StaticResource Visible}}">
-        <Button x:Name="RecentDetailsButton" Style="{StaticResource AcrylicOption}" Command="{Binding Command}" CommandParameter="recent-details" AutomationProperties.Name="查看上次整理的完整结果">
+        <Button x:Name="RecentDetailsButton" Style="{StaticResource AcrylicOption}" Command="{Binding Command}" CommandParameter="recent-details" AutomationProperties.Name="{loc:Tr 查看上次整理的完整结果}">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel><TextBlock Text="{Binding Recent.HomeOutcome}" FontWeight="SemiBold"/><TextBlock x:Name="ResultDelta" Text="{Binding Recent.HomeDelta}" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel>
             <TextBlock Grid.Column="1" Text="›" FontSize="20" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/>
@@ -39,7 +38,7 @@
         </Button>
       </Border>
       <Button x:Name="AutoStatusButton" Style="{StaticResource AcrylicOption}" Margin="0,8,0,0" Command="{Binding Command}" CommandParameter="automation-shortcut" ToolTip="{Binding Automatic}">
-        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="自动整理" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="AutoStatusText" Grid.Column="1" Text="{Binding AutomaticBrief}" Foreground="{DynamicResource Muted}"/></Grid>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{loc:Tr 自动整理}" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="AutoStatusText" Grid.Column="1" Text="{Binding AutomaticBrief}" Foreground="{DynamicResource Muted}"/></Grid>
       </Button>
     </StackPanel>
   </ScrollViewer>

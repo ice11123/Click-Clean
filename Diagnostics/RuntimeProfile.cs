@@ -13,11 +13,11 @@ internal static class RuntimeProfile
         store.Settings.Automation = new(); store.Settings.AutomationNeedsConfirmation = false;
         var app = new App(preview: true); app.InitializeComponent();
         // 不初始化托盘或登录任务；整理接口拒绝调用，仅内存读数使用真实系统API。
-        var window = new MainWindow(store, verification: true, memoryApi: new ReadOnlyMemory()); app.MainWindow = window;
+        var window = new MainWindow(store, verification: true, memoryApi: new ReadOnlyMemory(), observeInVerification: true); app.MainWindow = window;
         window.Loaded += async (_, _) => {
             var metrics = new List<object>();
             try {
-                var phases = allStates ? new[] { ("主窗口空闲", 30), ("真实鼠标监听", 30), ("底部岛浮出", 30), ("诊断页面", 30) } :
+                var phases = allStates ? new[] { ("隐藏窗口与岛收起", 30), ("主窗口空闲", 30), ("真实鼠标监听", 30), ("底部岛浮出", 30), ("诊断页面", 30) } :
                     pointerOnly ? new[] { ("真实鼠标监听", 60), ("底部岛浮出", 60) } : new[] { ("隐藏窗口与岛收起", 600), ("主窗口空闲", 60), ("底部岛浮出", 60), ("隐藏且关闭底部岛", 60) };
                 foreach (var phase in phases) {
                     window.DesktopIsland?.ResumePointerSampling();
@@ -43,10 +43,14 @@ internal static class RuntimeProfile
         };
         app.Run(window);
     }
-    private sealed class ReadOnlyMemory : IMemoryApi
+    private sealed class ReadOnlyMemory : IMemoryApi, IMemoryPerformanceApi, IDisposable
     {
         private readonly WindowsMemoryApi native = new();
         public MemorySnapshot Read() => native.Read();
+        public MemoryPressureSnapshot ReadPressure() => native.ReadPressure();
+        public BackgroundScanSummary ObserveBackgroundProcesses() => native.ObserveBackgroundProcesses();
+        public BackgroundCleanupSummary? LastBackgroundCleanup => null;
+        public void Dispose() => native.Dispose();
         public IDisposable EnablePrivilege() => throw new InvalidOperationException("性能测量不允许整理系统内存。");
         public int Execute(MemoryCommand command) => throw new InvalidOperationException("性能测量不允许整理系统内存。");
     }

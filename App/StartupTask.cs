@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using Microsoft.Win32;
 
 namespace ClickClean;
 public static class StartupTask
@@ -23,6 +24,8 @@ public static class StartupTask
     public static bool Exists()
     {
         if (BuildInfo.ExperimentalX86) return false;
+        using var migration = Registry.CurrentUser.OpenSubKey(@"Software\ClickClean");
+        if (migration?.GetValue("StartupMigrationEnabled") is int enabled && enabled == 1) return true;
         dynamic service = Connect();
         try
         {
@@ -63,15 +66,17 @@ public static class StartupTask
             {
                 try { folder.DeleteTask(Name, 0); }
                 catch (Exception ex) when (ex.HResult == unchecked((int)0x80070002)) { }
+                using var migration = Registry.CurrentUser.OpenSubKey(@"Software\ClickClean", true);
+                migration?.DeleteValue("StartupMigrationEnabled", false);
                 return;
             }
             dynamic task = service.NewTask(0);
             try
             {
-                task.RegistrationInfo.Description = "即清：当前用户登录后以管理员权限启动到托盘。";
+                task.RegistrationInfo.Description = "Click-Clean：当前用户登录后以普通权限启动到托盘。";
                 task.Principal.UserId = Sid;
                 task.Principal.LogonType = 3;
-                task.Principal.RunLevel = 1;
+                task.Principal.RunLevel = 0;
                 task.Settings.Enabled = true;
                 task.Settings.DisallowStartIfOnBatteries = false;
                 task.Settings.StopIfGoingOnBatteries = false;
@@ -88,6 +93,8 @@ public static class StartupTask
                 Marshal.FinalReleaseComObject(action);
                 dynamic registered = folder.RegisterTaskDefinition(Name, task, 6, Sid, null, 3, null);
                 Marshal.FinalReleaseComObject(registered);
+                using var migration = Registry.CurrentUser.OpenSubKey(@"Software\ClickClean", true);
+                migration?.DeleteValue("StartupMigrationEnabled", false);
             }
             finally { Marshal.FinalReleaseComObject(task); }
         }

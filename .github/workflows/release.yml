@@ -26,9 +26,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') { throw '版本格式无效' }
+          if (([xml](Get-Content Directory.Build.props -Raw)).Project.PropertyGroup.Version -ne $env:RELEASE_VERSION) { throw '发布版本与源码声明不一致' }
           gh release view "v$env:RELEASE_VERSION" 2>$null
           if ($LASTEXITCODE -eq 0) { throw '版本已存在，不覆盖已发布资产' }
-          ./build.ps1 -Version $env:RELEASE_VERSION -SkipInstaller -OutputRoot ./dist
-          $assets = @(Get-ChildItem ./dist/*Portable.zip,./dist/*Source.zip,./dist/SHA256SUMS.txt,./dist/releases/*.nupkg,./dist/releases/releases.win.json | ForEach-Object FullName)
-          gh release create "v$env:RELEASE_VERSION" @assets --target main --title "Click-Clean $env:RELEASE_VERSION" --notes-file CHANGELOG.md
+          winget install --id JRSoftware.InnoSetup.7 --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw '官方包管理器安装Inno Setup 7失败，拒绝发布缺少安装程序的迁移版本' }
+          ./build.ps1 -Version $env:RELEASE_VERSION -IncludePreview -OutputRoot ./dist
+          $probe = Start-Process ./dist/Click-Clean-Preview/ClickClean.Preview.exe -ArgumentList "--verify-updates `"$((Resolve-Path ./dist/releases).Path)`" `"$((Resolve-Path ./dist).Path)/update-tests`"" -PassThru -WindowStyle Hidden
+          if (-not $probe.WaitForExit(120000)) { $probe.Kill(); throw '更新回归超时' }
+          if ($probe.ExitCode -ne 0) { Get-Content ./dist/update-tests/failure.txt; throw '更新回归失败' }
+          $assets = @(Get-ChildItem ./dist/*Setup.exe,./dist/*Portable.zip,./dist/*Source.zip,./dist/SHA256SUMS.txt,./dist/releases/*.nupkg,./dist/releases/releases.win.json | ForEach-Object FullName)
+          if (@($assets | Where-Object { $_ -like '*Setup.exe' }).Count -ne 1) { throw '缺少正式安装包' }
+          gh release create "v$env:RELEASE_VERSION" @assets --target '${{ github.sha }}' --title "Click-Clean $env:RELEASE_VERSION" --notes-file CHANGELOG.md
           if ($LASTEXITCODE -ne 0) { throw '发布失败' }

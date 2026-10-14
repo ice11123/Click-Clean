@@ -1,11 +1,11 @@
 namespace ClickClean.Core;
 
 public enum AutomaticTriggerMode { Percentage, SystemPressure }
-public sealed record AutomationEnvironment(bool? LowMemory = null, bool Fullscreen = false, bool? DiskBusy = false);
+public sealed record AutomationEnvironment(bool? LowMemory = null, bool Fullscreen = false, bool? DiskBusy = false, bool? HighMemory = null);
 
 public sealed record AutomationSettings
 {
-    public AutomaticTriggerMode TriggerMode { get; init; }
+    public AutomaticTriggerMode TriggerMode { get; init; } = AutomaticTriggerMode.SystemPressure;
     public bool PauseFullscreen { get; init; } = true;
     public bool PauseDiskBusy { get; init; } = true;
     public bool ThresholdEnabled { get; init; }
@@ -14,12 +14,12 @@ public sealed record AutomationSettings
     public int CooldownMinutes { get; init; } = 30;
     public bool TimerEnabled { get; init; }
     public int IntervalMinutes { get; init; } = 60;
-    public bool FullCleanup { get; init; } = true;
+    public bool FullCleanup { get; init; }
     public AutomationSettings Validated() => this with {
-        TriggerMode = Enum.IsDefined(TriggerMode) ? TriggerMode : AutomaticTriggerMode.Percentage,
+        TriggerMode = Enum.IsDefined(TriggerMode) ? TriggerMode : AutomaticTriggerMode.SystemPressure,
         ThresholdPercent = Math.Clamp(ThresholdPercent, 55, 98),
-        // 兼容旧字段；新版自动步骤固定为原版三步，升级后需重新确认。
-        FullCleanup = true,
+        // 保留旧字段的读取兼容性；任何自动触发都不能开启全系统三步。
+        FullCleanup = false,
         SustainSeconds = Math.Clamp(SustainSeconds, 15, 600),
         CooldownMinutes = Math.Clamp(CooldownMinutes, 5, 240),
         IntervalMinutes = Math.Clamp(IntervalMinutes, 15, 1440)

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Velopack;
 using Velopack.Locators;
 using Velopack.Sources;
+using ClickClean.Security;
 
 namespace ClickClean;
 
@@ -26,6 +27,8 @@ public interface IApplicationUpdates : IDisposable
     bool Busy { get; }
     bool Ready { get; }
     bool Available { get; }
+    bool SystemComponentMissing => false;
+    bool RequiresInstaller => false;
     string Status { get; }
     UpdatePhase Phase { get; }
     int? Progress { get; }
@@ -41,10 +44,13 @@ public sealed class UpdateService : IApplicationUpdates
     private readonly string statePath;
     private readonly Func<IUpdateTransport> transportFactory;
     private readonly TimeSpan checkTimeout;
-    public UpdateService(string statePath, Func<IUpdateTransport>? transportFactory = null, TimeSpan? checkTimeout = null)
+    private readonly Func<bool> componentAvailable;
+    public UpdateService(string statePath, Func<IUpdateTransport>? transportFactory = null, TimeSpan? checkTimeout = null, Func<bool>? componentAvailable = null)
     {
         this.statePath = statePath; this.transportFactory = transportFactory ?? (() => new VelopackUpdateTransport());
         this.checkTimeout = checkTimeout ?? TimeSpan.FromSeconds(30);
+        this.componentAvailable = componentAvailable ?? (() => ProtectedInstallation.IsProtected(out _));
+        SystemComponentMissing = !BuildInfo.ExperimentalX86 && !this.componentAvailable();
         if (this.checkTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(checkTimeout));
     }
     private sealed record PreparedUpdate(string FileName, string SHA256, long Size, string Version);
@@ -57,6 +63,8 @@ public sealed class UpdateService : IApplicationUpdates
     public bool Busy => Volatile.Read(ref gate) != 0;
     public bool Ready { get; private set; }
     public bool Available => available is not null;
+    public bool SystemComponentMissing { get; private set; }
+    public bool RequiresInstaller { get; private set; }
     public string Status { get; private set; } = "尚未检查更新";
     public UpdatePhase Phase { get; private set; }
     public int? Progress { get; private set; }
@@ -77,12 +85,13 @@ public sealed class UpdateService : IApplicationUpdates
             if (!Uri.TryCreate(BuildInfo.Repository, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != "github.com")
             { Report("此开发构建尚未连接已验证的发布仓库。", UpdatePhase.Failed); return; }
             transport ??= transportFactory();
+            SystemComponentMissing = !componentAvailable();
             if (readyAsset is null && transport.Pending is { } pending && File.Exists(statePath))
             {
                 try
                 {
                     var state = JsonSerializer.Deserialize<PreparedUpdate>(await File.ReadAllTextAsync(statePath));
-                    if (state is not null && state.FileName == pending.FileName && state.Version == pending.Version.ToString())
+                    if (state is not null && state.FileName == pending.FileName && state.Version == pending.Version.ToString() && !NeedsInstaller(pending))
                     { await VerifyAsync(pending, state.SHA256, state.Size, active.Token); readyAsset = pending; }
                 }
                 catch { /* 待更新记录损坏时保持旧版运行，可重新检查下载。 */ }
@@ -90,7 +99,13 @@ public sealed class UpdateService : IApplicationUpdates
             Ready = readyAsset is not null;
             Report("正在检查正式版本…", UpdatePhase.Checking);
             available = await transport.CheckAsync().WaitAsync(checkTimeout, active.Token);
-            if (available is null) { Report(Ready ? "已下载更新，点击重启后生效。" : "当前已是最新正式版本。", Ready ? UpdatePhase.Ready : UpdatePhase.Current); return; }
+            RequiresInstaller = available is not null && NeedsInstaller(available.TargetFullRelease);
+            if (available is null) { Report(Ready ? "已下载更新，点击重启后生效。" : SystemComponentMissing ? "日常优化可用；高级系统组件需通过正式安装包安装。" : "当前已是最新正式版本。", Ready ? UpdatePhase.Ready : UpdatePhase.Current); return; }
+            if (RequiresInstaller) {
+                Ready = false; readyAsset = null;
+                Report("此版本涉及系统组件迁移，请从官方发行页运行安装包；不会提权运行更新缓存。", UpdatePhase.Available);
+                return;
+            }
             Report($"发现 {available.TargetFullRelease.Version} · 由你决定是否下载更新。", Ready ? UpdatePhase.Ready : UpdatePhase.Available);
             if (download)
             {
@@ -134,6 +149,7 @@ public sealed class UpdateService : IApplicationUpdates
     public async Task ApplyAsync(bool tray)
     {
         if (!Ready || Busy || readyAsset is null || transport is null) return;
+        if (NeedsInstaller(readyAsset)) throw new InvalidOperationException("系统组件迁移必须使用官方安装包，不能从用户可写缓存提权替换。");
         try {
             var state = JsonSerializer.Deserialize<PreparedUpdate>(await File.ReadAllTextAsync(statePath))
                 ?? throw new InvalidDataException("缺少已校验的更新记录，请重新下载更新。");
@@ -148,6 +164,8 @@ public sealed class UpdateService : IApplicationUpdates
         // 仅由界面的统一协调入口在无整理调用时执行；不使用会限时杀进程的等待 API。
         transport.Apply(readyAsset, tray);
     }
+    // 主版本界线同时是受保护组件的协议兼容界线；同一主版本仅更新普通权限GUI。
+    private static bool NeedsInstaller(VelopackAsset asset) => Version.TryParse(BuildInfo.Version, out var current) && asset.Version.Major != current.Major;
     private async Task VerifyAsync(VelopackAsset asset, string expectedHash, long expectedSize, CancellationToken cancellation = default)
     {
         if (Path.GetFileName(asset.FileName) != asset.FileName || string.IsNullOrWhiteSpace(asset.FileName))

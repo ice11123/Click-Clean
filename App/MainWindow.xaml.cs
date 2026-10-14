@@ -37,20 +37,22 @@ public partial class MainWindow : Window
 
     public MainWindow(Store store, bool trayMode = false, bool verification = false, IMemoryApi? memoryApi = null,
         Action<Uri>? projectLinkOpener = null, IApplicationUpdates? updateOverride = null,
-        IAutomationEnvironmentReader? environmentOverride = null, IProcessMemoryReader? processOverride = null)
+        IAutomationEnvironmentReader? environmentOverride = null, IProcessMemoryReader? processOverride = null, bool observeInVerification = false)
     {
         this.store = store; preview = verification;
+        Localization.Language = store.Settings.Language;
         this.projectLinkOpener = projectLinkOpener ?? (uri => OpenExternal(uri.AbsoluteUri));
         updates = updateOverride ?? new UpdateService(Path.Combine(store.Root, "update-state.json"));
         simulatedUpdates = preview && updateOverride is not null;
-        memory = memoryApi ?? (preview ? new PreviewMemoryApi() : new WindowsMemoryApi());
+        memory = memoryApi ?? (preview ? new PreviewMemoryApi() : new ElevatedMemoryApi(new WindowsMemoryApi()));
         recovery = new UpdateRecovery(store.Root);
         cleanup = new(store, memory, automation, Dispatcher, preview);
-        sampler = new(store, memory, cleanup, automation, updates, environmentOverride ?? (preview ? null : new AutomationEnvironmentReader()), preview, () => applying);
+        sampler = new(store, memory, cleanup, automation, updates, environmentOverride ?? (preview ? null : new AutomationEnvironmentReader()), preview && !observeInVerification, () => applying);
         processes = new(processOverride ?? new ProcessMemoryReader()); processes.Initialize();
         Presentation = new(new UiCommand(DispatchAction)) { Preview = preview };
         InitializeComponent(); DataContext = Presentation;
-        Title = preview ? "Click-Clean 即清 · 交互预览" : BuildInfo.ExperimentalX86 ? "Click-Clean 即清 · x86试验版" : "Click-Clean 即清";
+        Title = Localization.Text(preview ? "Click-Clean 即清 · 交互预览" : BuildInfo.ExperimentalX86 ? "Click-Clean 即清 · x86试验版" : "Click-Clean 即清");
+        Localization.Changed += LanguageChanged;
         SourceInitialized += (_, _) => ApplyTheme();
         PreviewMouseDown += (_, _) => pointerInput = true;
         PreviewKeyDown += (_, e) => { pointerInput = false; if (e.Key == Key.Escape && DetailsPopup.IsOpen) { ClosePopup(); e.Handled = true; } };
@@ -83,6 +85,7 @@ public partial class MainWindow : Window
         cleanup.DockResult += text => { dockStatus.SetResult(text); mini?.RefreshStatus(); };
         cleanup.ResultAvailable += ShowResult;
         sampler.MemoryChanged += MemoryChanged;
+        sampler.PressureChanged += _ => PressureChanged();
         sampler.ThemePoll += () => ApplyTheme();
         sampler.AutomaticChanged += RefreshAutomationSummary;
         processes.Changed += ProcessesChanged;
@@ -99,6 +102,7 @@ public partial class MainWindow : Window
         sampler.Read(); RefreshAutomationSummary(); ApplyTheme();
         if (store.Settings.MiniIsland) ShowIsland();
         sampler.SetVisible(!trayMode, false); sampler.Start(); UpdateChanged();
+        if (!preview && !store.Settings.LanguageChosen) Dispatcher.BeginInvoke(ChooseFirstLanguage, DispatcherPriority.ApplicationIdle);
     }
 
     private async Task DispatchAction(object? action)
@@ -106,7 +110,7 @@ public partial class MainWindow : Window
         if (disposed) return;
         try {
             if (action is ResultRow row) { Presentation.Detail = row; OpenPopup("result", Keyboard.FocusedElement as FrameworkElement); return; }
-            if (action is ProcessRow process) { Presentation.ProcessDetail = process.Description; OpenPopup("process", Keyboard.FocusedElement as FrameworkElement); return; }
+            if (action is ProcessRow process) { Presentation.ProcessDetailRow = process; Presentation.RefreshLanguage(); OpenPopup("process", Keyboard.FocusedElement as FrameworkElement); return; }
             switch (action as string) {
                 case "overview": Navigate("overview"); break;
                 case "history": OpenHistory(); break;
@@ -134,7 +138,8 @@ public partial class MainWindow : Window
                 case "cancel-update": updates.Cancel(); break;
                 case "apply-update": await ApplyUpdate(); break;
                 case "home-update":
-                    if (updates.Ready) await ApplyUpdate();
+                    if (updates.RequiresInstaller) OpenExternal(BuildInfo.Repository.TrimEnd('/') + "/releases/latest");
+                    else if (updates.Ready) await ApplyUpdate();
                     else if (updates.Available && (!preview || simulatedUpdates)) await updates.DownloadAsync();
                     else await CheckUpdates();
                     break;
@@ -159,8 +164,7 @@ public partial class MainWindow : Window
     private async Task RoutineCleanup(string trigger = "手动", bool automatic = false)
     {
         if (IsBusy || applying || disposed) return;
-        var environment = sampler.Environment;
-        if (automatic) { if (preview) environment = await sampler.ReadEnvironment(); else environment = environment with { Fullscreen = ForegroundActivity.IsFullscreen() }; }
+        var environment = await sampler.ReadEnvironment();
         if (!IsBusy && !applying && !disposed) await cleanup.RunRoutineAsync(trigger, automatic, environment);
     }
     private MemoryCommand[] Selected() => new[] { (WorkingCheck, MemoryCommand.WorkingSets), (ModifiedCheck, MemoryCommand.ModifiedPages), (StandbyCheck, MemoryCommand.StandbyCache) }.Where(x => x.Item1.IsChecked == true).Select(x => x.Item2).ToArray();
@@ -170,7 +174,7 @@ public partial class MainWindow : Window
         var selected = Selected();
         if (selected.Length == 0) { Presentation.Operation = "请至少选择一个整理项目。"; return; }
         if (!preview && selected.Any(c => c is MemoryCommand.WorkingSets or MemoryCommand.ModifiedPages) &&
-            MessageBox.Show(this, "所选步骤作用于全系统，可能导致重新加载、短暂卡顿和磁盘忙碌。仍要执行？", "自定义整理", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+            MessageBox.Show(this, Localization.Text("所选步骤作用于全系统，可能导致重新加载、短暂卡顿和磁盘忙碌。仍要执行？"), Localization.Text("自定义整理"), MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
         ClosePopup(); await cleanup.RunAsync(selected);
     }
     private void CleanupChanged()
@@ -185,6 +189,7 @@ public partial class MainWindow : Window
     }
     private void MemoryChanged(MemorySnapshot? snapshot, string error)
     {
+        latestMemory = snapshot; latestMemoryError = error;
         Presentation.Load = snapshot?.Load.ToString("0") ?? "—"; Presentation.Percentage = snapshot?.Load ?? 0;
         Presentation.Available = snapshot is null ? "—" : Labels.Bytes(snapshot.Available);
         Presentation.Used = snapshot is null ? "—" : Labels.Bytes(snapshot.Used);
@@ -192,7 +197,7 @@ public partial class MainWindow : Window
         Presentation.Commit = snapshot is null ? "—" : Labels.Bytes(snapshot.Commit) + " / " + Labels.Bytes(snapshot.CommitLimit);
         Presentation.Cache = snapshot?.SystemCache is { } cache ? Labels.Bytes(cache) : "—";
         Presentation.MemoryError = error; dockStatus.SetMemory(snapshot); mini?.RefreshStatus();
-        if (tray is not null) tray.Text = snapshot is null ? "Click-Clean · 内存读数暂不可用" : $"Click-Clean · {snapshot.Load:0}% · 可用 {Labels.Bytes(snapshot.Available)}";
+        if (tray is not null) tray.Text = snapshot is null ? "Click-Clean · " + Localization.Text("内存读数暂不可用") : Localization.Format("Click-Clean · {0}% · 可用 {1}", $"{snapshot.Load:0}", Labels.Bytes(snapshot.Available));
     }
     public void ShowResult(CleanupResult result, bool showDock = true)
     {
@@ -200,7 +205,12 @@ public partial class MainWindow : Window
         if (Presentation.Recent?.Id == result.Id) Presentation.Recent.Update(result); else Presentation.Recent = new(result);
         if (Presentation.Detail?.Id == result.Id) Presentation.Detail.Update(result);
         RefreshHistory();
-        if (showDock) { dockStatus.SetResult((result.Success ? "完成" : result.Cancelled ? "已取消" : result.Steps.Any(s => s.Success) ? "部分完成" : "失败") + " · " + (result.PreferredChange is null ? "变化未知" : (result.FollowUp is null ? "即时 " : "复测 ") + Labels.Delta(result.PreferredChange))); mini?.RefreshStatus(); }
+        if (showDock) {
+            // 日常优化的结果只报告实际处理对象，不把波动读数包装成“加速”。
+            var row = Presentation.Recent!;
+            dockStatus.SetResult(result.BackgroundCleanup is not null || result.Steps.Any(s => s.Command == MemoryCommand.BackgroundWorkingSets) ? row.HomeDelta : row.Outcome);
+            mini?.RefreshStatus();
+        }
     }
     private void RefreshHistory()
     {
@@ -256,12 +266,12 @@ public partial class MainWindow : Window
     private void CreateTray()
     {
         var menu = new System.Windows.Forms.ContextMenuStrip();
-        menu.Items.Add("打开 Click-Clean 即清", null, (_, _) => Dispatcher.BeginInvoke(ShowMain));
-        menu.Items.Add("一键整理", null, (_, _) => Dispatcher.BeginInvoke(async () => await RoutineCleanup()));
-        menu.Items.Add("显示 / 收起桌面岛", null, (_, _) => Dispatcher.BeginInvoke(() => { Presentation.Settings.Island = mini?.IsVisible != true; }));
-        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator()); menu.Items.Add("退出", null, (_, _) => Dispatcher.BeginInvoke(TryExit));
+        menu.Items.Add(Localization.Text("打开 Click-Clean 即清"), null, (_, _) => Dispatcher.BeginInvoke(ShowMain)).Tag = "打开 Click-Clean 即清";
+        menu.Items.Add(Localization.Text("优化内存"), null, (_, _) => Dispatcher.BeginInvoke(async () => await RoutineCleanup())).Tag = "优化内存";
+        menu.Items.Add(Localization.Text("显示 / 收起桌面岛"), null, (_, _) => Dispatcher.BeginInvoke(() => { Presentation.Settings.Island = mini?.IsVisible != true; })).Tag = "显示 / 收起桌面岛";
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator()); menu.Items.Add(Localization.Text("退出"), null, (_, _) => Dispatcher.BeginInvoke(TryExit)).Tag = "退出";
         var icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application;
-        tray = new() { Icon = icon, Text = "Click-Clean 即清", ContextMenuStrip = menu, Visible = true }; tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMain);
+        tray = new() { Icon = icon, Text = Localization.Text("Click-Clean 即清"), ContextMenuStrip = menu, Visible = true }; tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(ShowMain);
         try { if (StartupTask.Exists() || store.Settings.Startup) { StartupTask.Set(true); store.Settings.Startup = true; if (store.MigratedLegacy) StartupTask.RemoveLegacy(); SaveSettings(); LoadPreferences(); } } catch (Exception ex) { store.Log(ex.ToString()); }
     }
     public void TryExit()
@@ -275,8 +285,9 @@ public partial class MainWindow : Window
     {
         if (disposed) return; disposed = true;
         ClosePopup(); SystemParameters.StaticPropertyChanged -= SystemPreferenceChanged; updates.Changed -= UpdateChanged;
+        Localization.Changed -= LanguageChanged;
         Presentation.Settings.PropertyChanged -= PreferenceChanged;
-        processes.Dispose(); sampler.Dispose(); cleanup.Dispose(); updates.Dispose(); mini?.Close(); mini = null;
+        processes.Dispose(); sampler.Dispose(); cleanup.Dispose(); updates.Dispose(); (memory as IDisposable)?.Dispose(); mini?.Close(); mini = null;
         if (tray is not null) { var icon = tray.Icon; tray.Visible = false; tray.Dispose(); icon?.Dispose(); tray = null; }
     }
     private static void OpenExternal(string value) => Process.Start(new ProcessStartInfo(value) { UseShellExecute = true });

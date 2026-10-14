@@ -10,15 +10,20 @@ public partial class MainWindow
     {
         if (disposed || page is not ("overview" or "history" or "diagnostics" or "settings") || !CheckDraft()) return false;
         ClosePopup();
-        navigationState[Presentation.Page] = (Keyboard.FocusedElement, PageScroll(Presentation.Page)?.VerticalOffset ?? 0);
+        var previousPage = Presentation.Page;
+        navigationState.TryGetValue(previousPage, out var previousState);
+        // 点击侧栏时焦点已移到目标按钮，不能把它误存为旧页面的内容焦点。
+        var focused = Keyboard.FocusedElement is DependencyObject current && PageContent(previousPage).IsAncestorOf(current)
+            ? Keyboard.FocusedElement : previousState.Focus;
+        navigationState[previousPage] = (focused, PageScroll(previousPage)?.VerticalOffset ?? 0);
         Presentation.Page = page;
         processes.SetActive(page == "diagnostics", IsVisible && WindowState != WindowState.Minimized);
         if (page == "history") RefreshHistory();
-        var target = page switch { "history" => (FrameworkElement)HistoryPane, "diagnostics" => DiagnosticsPane, "settings" => SettingsPane, _ => OverviewPane };
+        var target = PageContent(page);
         Dispatcher.BeginInvoke(() => {
             if (disposed || Presentation.Page != page) return;
             if (navigationState.TryGetValue(page, out var saved)) {
-                if (saved.Focus is UIElement element && element.IsVisible && element.IsEnabled) element.Focus();
+                if (saved.Focus is UIElement element && target.IsAncestorOf(element) && element.IsVisible && element.IsEnabled) element.Focus();
                 else target.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
                 PageScroll(page)?.ScrollToVerticalOffset(saved.Offset);
             }
@@ -26,6 +31,7 @@ public partial class MainWindow
         }, DispatcherPriority.Loaded);
         return true;
     }
+    private FrameworkElement PageContent(string page) => page switch { "history" => HistoryPane, "diagnostics" => DiagnosticsPane, "settings" => SettingsPane, _ => OverviewPane };
     private ScrollViewer? PageScroll(string page) => page switch { "overview" => OverviewPane.MainContent, "history" => HistoryPane.RecordsScroll, "settings" => SettingsPane.SettingsScroll, _ => null };
     public void OpenSettings(bool animate = false)
     {
@@ -48,7 +54,7 @@ public partial class MainWindow
         var draft = Presentation.Settings.Draft;
         if (!draft.Dirty) return true;
         var decision = DraftDecisionOverride?.Invoke() ?? (preview ? MessageBoxResult.Cancel :
-            MessageBox.Show(this, "自动整理规则尚未保存。\n是：保存并继续；否：放弃修改；取消：继续编辑。", "未保存的规则", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel));
+            MessageBox.Show(this, Localization.Text("自动整理规则尚未保存。\n是：保存并继续；否：放弃修改；取消：继续编辑。"), Localization.Text("未保存的规则"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel));
         if (decision == MessageBoxResult.Yes) return SaveAutomation();
         if (decision == MessageBoxResult.No) { draft.Load(store.Settings.Automation); return true; }
         return false;

@@ -90,6 +90,23 @@ internal static class UpdateVerification
         recovery.BeginLaunch(); assert(!recovery.HasIncompleteUpdate, "首次正常启动不误报更新失败"); recovery.BeginLaunch();
         assert(new UpdateRecovery(area).HasIncompleteUpdate && File.Exists(Path.Combine(area, "before-update", "settings.json")), "首次启动未确认保留恢复标记和配置备份");
         recovery.MarkHealthy("2.4.0"); assert(!recovery.HasIncompleteUpdate && File.Exists(Path.Combine(area, "last-healthy-version.json")), "界面健康启动清除恢复标记");
+
+        var nextMajor = new VelopackAsset {
+            PackageId = update.TargetFullRelease.PackageId,
+            Version = SemanticVersion.Parse((Version.Parse(BuildInfo.Version).Major + 1) + ".0.0"),
+            Type = update.TargetFullRelease.Type, FileName = update.TargetFullRelease.FileName,
+            SHA1 = update.TargetFullRelease.SHA1, SHA256 = update.TargetFullRelease.SHA256, Size = update.TargetFullRelease.Size
+        };
+        var migration = new FaultTransport(new UpdateInfo(nextMajor, false, null!, []), area);
+        using var majorService = new UpdateService(Path.Combine(area, "major.json"), () => migration, componentAvailable: () => true);
+        await majorService.CheckAsync(); await majorService.DownloadAsync(); await majorService.ApplyAsync(false);
+        assert(majorService.RequiresInstaller && majorService.Available && !majorService.Ready && migration.Downloads == 0 && migration.Applies == 0,
+            "跨主版本系统组件迁移只提示正式安装包，绝不下载后提权替换");
+        var missingTransport = new FaultTransport(update, area) { Check = () => Task.FromResult<UpdateInfo?>(null) };
+        using var missing = new UpdateService(Path.Combine(area, "missing.json"), () => missingTransport, componentAvailable: () => false);
+        await missing.CheckAsync();
+        assert(missing.SystemComponentMissing && !missing.RequiresInstaller && missing.Phase == UpdatePhase.Current && missing.Status.Contains("日常优化可用"),
+            "缺少高级组件不阻断日常优化，明确提示安装迁移");
     }
 
     private sealed class FaultTransport(UpdateInfo update, string packages) : IUpdateTransport
