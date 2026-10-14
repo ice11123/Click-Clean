@@ -33,6 +33,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw '系统组件ACL初始化失败' }
           icacls $componentRoot /setowner '*S-1-5-32-544' /T /Q
           if ($LASTEXITCODE -ne 0) { throw '系统组件owner初始化失败' }
+          ./build-assets.ps1
           dotnet publish Diagnostics/ClickClean.Preview.csproj -c Release -r win-x64 --self-contained true -o ./component-check
           if ($LASTEXITCODE -ne 0) { throw '认证探针构建失败' }
           $result = Join-Path $env:RUNNER_TEMP 'component-probe.json'
