@@ -142,10 +142,14 @@ public sealed class UpdateService : IApplicationUpdates
             Ready = readyAsset is not null;
             Report(ex is Velopack.Exceptions.NotInstalledException
                 ? "这是未打包的开发目录；应用内更新需使用正式安装版或 Velopack 便携版。"
+                : IsConnectionRefused(ex) ? "连接被拒绝。若刚修改代理端口，请从托盘退出应用后重开，再检查更新。"
                 : "更新未完成，现有版本不变：" + ex.Message, UpdatePhase.Failed);
         }
         finally { operation = null; Volatile.Write(ref gate, 0); Changed?.Invoke(); }
     }
+    private static bool IsConnectionRefused(Exception error) =>
+        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionRefused } ||
+        error.InnerException is { } inner && IsConnectionRefused(inner);
     public async Task ApplyAsync(bool tray)
     {
         if (!Ready || Busy || readyAsset is null || transport is null) return;

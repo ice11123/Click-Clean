@@ -59,6 +59,8 @@ internal static class UpdateVerification
         var area = Path.Combine(output, "service-contracts"); Directory.CreateDirectory(area);
         var transport = new FaultTransport(update, area);
         using var service = new UpdateService(Path.Combine(area, "prepared.json"), () => transport, TimeSpan.FromMilliseconds(100));
+        transport.Check = () => Task.FromException<UpdateInfo?>(new System.Net.Http.HttpRequestException("模拟旧代理拒绝连接", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused)));
+        await service.CheckAsync(); assert(!service.Busy && service.Phase == UpdatePhase.Failed && !service.Ready && service.Status.Contains("托盘退出"), "旧代理连接拒绝提示完整退出重开，不修改系统配置或绕过代理");
         transport.Check = () => Task.FromException<UpdateInfo?>(new IOException("模拟离线"));
         await service.CheckAsync(); assert(!service.Busy && service.Phase == UpdatePhase.Failed && !service.Ready, "实际更新服务离线失败可恢复，不标记就绪");
         transport.Check = () => new TaskCompletionSource<UpdateInfo?>().Task;

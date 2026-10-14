@@ -143,6 +143,11 @@ internal static class RebuiltUiCheck
             var scroller = Control<ScrollViewer>("MainContent");
             Assert(scroller.ScrollableHeight < 1, $"默认窗口读数、操作、成功结果首屏完整：{theme}，内容{scroller.ExtentHeight:0.0}，视口{scroller.ViewportHeight:0.0}");
             var primary = Control<Button>("CleanButton"); var primaryText = Descendants(primary).OfType<TextBlock>().First(t => t.Text == "优化内存");
+            var gauge = Control<MemoryGauge>("MemoryBar");
+            Assert(gauge.ActualWidth == 176 && gauge.ActualHeight == 176 && gauge.Value == state.Percentage && Control<TextBlock>("LoadText").FontSize == 48,
+                "恢复2.6.1圆盘尺寸与大字号，占比直接绑定同一真实读数：" + theme);
+            Assert(Control<TextBlock>("AvailableText").Text == state.Available && Control<TextBlock>("PressureTitle").Text == state.PressureTitle,
+                "圆盘右侧恢复可用内存与主按钮，保留简短实际压力状态：" + theme);
             Assert(primary.ActualWidth >= 160 && primary.ActualHeight >= 44 && primaryText.FontSize >= 15, "主操作尺寸与实际字号突出：" + theme);
             Assert(state.AutomaticBrief == "已关闭  ›" && !state.OperationVisible, "自动状态简短，完成状态不与结果重复：" + theme);
             Assert(((SolidColorBrush)primaryText.Foreground).Color == ColorOf("AccentText"), "主按钮实际文字使用白色而非正文色：" + theme);

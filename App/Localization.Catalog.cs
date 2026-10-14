@@ -40,6 +40,8 @@ public static partial class Localization
         ["内存占用"] = "Memory usage",
         ["可用内存"] = "Available memory",
         ["共 "] = "Total ",
+        ["共"] = "Total",
+        ["连接被拒绝。若刚修改代理端口，请从托盘退出应用后重开，再检查更新。"] = "Connection refused. If the proxy port changed, exit the app from the system tray, reopen it and check again.",
         ["优化内存"] = "Optimize memory",
         ["检测实际压力，只整理符合条件的闲置后台。"] = "Check actual memory pressure and optimize eligible idle background apps.",
         ["优化内存：先检测压力，再整理闲置后台"] = "Optimize memory: check pressure, then trim eligible idle background apps",
