@@ -381,4 +381,3 @@ public static partial class Localization
         CreateTemplate("当前步骤耗时较长，继续等待系统返回。{0}", "The current step is taking longer. Waiting for Windows. {0}"),
     ];
 }
-
