@@ -21,7 +21,7 @@
           <TextBlock Text="{loc:Tr 可用内存}" Style="{StaticResource Caption}"/>
           <TextBlock x:Name="AvailableText" Text="{Binding Available}" FontSize="24" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" TextWrapping="NoWrap" Margin="0,4,0,4"/>
           <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,20"><Run Text="{loc:Tr 共}"/><Run Text=" "/><Run Text="{Binding Total}"/></TextBlock>
-          <Button x:Name="CleanButton" Content="{Binding CleanLabel}" Width="176" Height="48" FontSize="16" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanClean}" Command="{Binding Command}" CommandParameter="clean" ToolTip="{loc:Tr 检测实际压力，只整理符合条件的闲置后台。}" AutomationProperties.Name="{loc:Tr 优化内存：先检测压力，再整理闲置后台}"/>
+          <Button x:Name="CleanButton" Content="{Binding CleanLabel}" Width="176" Height="48" FontSize="16" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanClean}" Command="{Binding Command}" CommandParameter="clean" ToolTip="{loc:Tr 手动执行全系统三步，可能增加缺页或磁盘活动。}" AutomationProperties.Name="{loc:Tr 手动整理：裁剪工作集、刷新修改页、清理待机缓存}"/>
           <TextBlock x:Name="PressureTitle" Text="{Binding PressureTitle}" ToolTip="{Binding PressureHint}" Style="{StaticResource Caption}" HorizontalAlignment="Center" Margin="0,8,0,0" AutomationProperties.LiveSetting="Polite"/>
         </StackPanel>
       </Grid>

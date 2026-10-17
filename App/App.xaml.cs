@@ -32,19 +32,32 @@ public partial class App : Application
         { MessageBox.Show("Click-Clean 仅支持 Windows 11 x64。", "平台不支持"); Shutdown(2); return; }
         if (e.Args.SequenceEqual(new[] { "--remove-startup" }))
         { if (BuildInfo.ExperimentalX86) { Shutdown(); return; } try { StartupTask.Set(false); Shutdown(); } catch { Shutdown(1); } return; }
-        if (e.Args.Any(a => a is not ("--tray" or "--language=zh-CN" or "--language=en-US")) && !e.Args.SequenceEqual(new[] { "--exit" }))
+        if (e.Args.Any(a => a is not ("--tray" or "--limited-start" or "--language=zh-CN" or "--language=en-US")) && !e.Args.SequenceEqual(new[] { "--exit" }))
         { MessageBox.Show("不支持的启动参数。", "Click-Clean"); Shutdown(2); return; }
-        if (!e.Args.SequenceEqual(new[] { "--exit" }) && WindowsMemoryApi.IsAdmin())
+        var startupPermission = StartupPermissionPolicy.Evaluate(WindowsMemoryApi.IsAdmin(), e.Args.Contains("--limited-start"));
+        if (!e.Args.SequenceEqual(new[] { "--exit" }) && startupPermission != StartupPermissionAction.Continue)
         {
-            var english = e.Args.Contains("--language=en-US");
-            MessageBox.Show(english ? "Click-Clean now runs without administrator rights. Close the old instance, then launch normally from the Start menu."
-                : "新版 Click-Clean 界面不再需要管理员权限。请关闭旧实例，通过开始菜单普通启动。", "Click-Clean");
-            Shutdown(1); return;
+            try {
+                if (startupPermission == StartupPermissionAction.Stop) throw new InvalidOperationException("普通权限交接仍获得高权限，已停止重复启动。请检查兼容性提权标记并使用正式安装包修复。");
+                // 旧最高权限登录任务在应用内升级后可能仍存在；先迁移，再交接到独立普通权限任务。
+                StartupTask.RepairExistingRunLevel();
+                StartupTask.LaunchUnelevated(string.Join(" ", e.Args.Append("--limited-start")));
+                Shutdown(); return;
+            }
+            catch (Exception ex) {
+                var log = new Store(); log.Log("普通权限启动交接失败：" + ex);
+                // 登录失败只记日志，避免每次开机重复弹窗；手动启动仍提供明确错误。
+                if (!e.Args.Contains("--tray")) MessageBox.Show(ex.Message, "Click-Clean");
+                Shutdown(1); return;
+            }
         }
         try
         {
             using var identity = WindowsIdentity.GetCurrent();
             var suffix = identity.User!.Value;
+            if (e.Args.Contains("--limited-start")) {
+                try { StartupTask.RemoveHandoff(); } catch (Exception ex) { new Store().Log("清除启动交接任务失败：" + ex.Message); }
+            }
             if (e.Args.SequenceEqual(new[] { "--exit" }))
             {
                 try { using var signal = EventWaitHandle.OpenExisting(@"Local\ClickClean.Exit." + suffix); signal.Set(); }

@@ -4,7 +4,7 @@ namespace ClickClean.Core;
 
 public sealed class UserSettings
 {
-    public int SchemaVersion { get; set; } = 5;
+    public int SchemaVersion { get; set; } = 6;
     public string Language { get; set; } = "zh-CN";
     public bool LanguageChosen { get; set; }
     public bool AutomationNeedsConfirmation { get; set; }
@@ -37,6 +37,13 @@ public sealed class UserSettings
             AutomationNeedsConfirmation |= Automation?.ThresholdEnabled == true || Automation?.TimerEnabled == true;
             if (Automation is not null) Automation = Automation with { TriggerMode = AutomaticTriggerMode.SystemPressure, FullCleanup = false };
             SchemaVersion = 5;
+        }
+        if (SchemaVersion < 6)
+        {
+            // 百分比自动动作恢复三步，不能把已开启的后台规则静默升级为全系统干预。
+            AutomationNeedsConfirmation |= Automation?.TriggerMode == AutomaticTriggerMode.Percentage &&
+                (Automation.ThresholdEnabled || Automation.TimerEnabled);
+            SchemaVersion = 6;
         }
         Language = Language == "en-US" ? "en-US" : "zh-CN";
         Theme = Theme is "light" or "dark" ? Theme : "system";

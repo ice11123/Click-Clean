@@ -13,7 +13,7 @@ public partial class MainWindow
             state.Theme = value.Theme switch { "dark" => 1, "system" => 2, _ => 0 };
             state.Language = value.Language == "en-US" ? 1 : 0;
             state.ReduceMotion = value.ReduceMotion; state.Island = value.MiniIsland; state.CloseToTray = value.CloseToTray; state.Startup = value.Startup; state.CheckUpdates = value.CheckUpdates;
-            if (!state.Draft.Dirty) { state.Draft.Load(value.Automation); if (value.AutomationNeedsConfirmation) state.Draft.Feedback = "旧自动配置已暂停，请核对新的后台优化规则并确认保存。"; }
+            if (!state.Draft.Dirty) { state.Draft.Load(value.Automation); if (value.AutomationNeedsConfirmation) state.Draft.Feedback = "旧自动配置已暂停，请核对执行方式并确认保存。"; }
         }
         finally { loadingSettings = false; }
     }
@@ -59,7 +59,10 @@ public partial class MainWindow
             return false;
         }
         if ((value.ThresholdEnabled || value.TimerEnabled) && !preview) {
-            if (MessageBox.Show(this, Localization.Text("保存后，仅在 Windows 确认低内存时整理闲置后台。不会执行全系统三步。继续？"), Localization.Text("确认自动整理规则"), MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return false;
+            var warning = value.TriggerMode == AutomaticTriggerMode.Percentage
+                ? "达到占用门槛后执行全系统三步，可能请求UAC并增加缺页和磁盘活动。不保证提速。继续？"
+                : "保存后，仅在 Windows 确认低内存时整理闲置后台。不会执行全系统三步。继续？";
+            if (MessageBox.Show(this, Localization.Text(warning), Localization.Text("确认自动整理规则"), MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return false;
         }
         var previous = store.Settings.Automation; var confirmation = store.Settings.AutomationNeedsConfirmation;
         store.Settings.Automation = value; store.Settings.AutomationNeedsConfirmation = false;

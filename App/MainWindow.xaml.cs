@@ -164,7 +164,7 @@ public partial class MainWindow : Window
     private async Task RoutineCleanup(string trigger = "手动", bool automatic = false)
     {
         if (IsBusy || applying || disposed) return;
-        var environment = await sampler.ReadEnvironment();
+        var environment = automatic ? await sampler.ReadEnvironment() : new AutomationEnvironment();
         if (!IsBusy && !applying && !disposed) await cleanup.RunRoutineAsync(trigger, automatic, environment);
     }
     private MemoryCommand[] Selected() => new[] { (WorkingCheck, MemoryCommand.WorkingSets), (ModifiedCheck, MemoryCommand.ModifiedPages), (StandbyCheck, MemoryCommand.StandbyCache) }.Where(x => x.Item1.IsChecked == true).Select(x => x.Item2).ToArray();

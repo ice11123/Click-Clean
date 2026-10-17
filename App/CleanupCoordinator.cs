@@ -34,6 +34,11 @@ internal sealed class CleanupCoordinator(Store store, IMemoryApi memory, Automat
     public async Task RunRoutineAsync(string trigger, bool automatic, AutomationEnvironment environment)
     {
         if (disposed || Busy || automatic && store.Settings.AutomationNeedsConfirmation) return;
+        // 用户点击是明确执行指令；占用、全屏和磁盘避让仅约束自动触发。
+        if (!automatic) {
+            await RunAsync(RoutineCleanupPolicy.ManualSteps, trigger);
+            return;
+        }
         var a = store.Settings.Automation;
         MemorySnapshot? snapshot = null;
         bool? low = environment.LowMemory, high = null;
@@ -41,15 +46,15 @@ internal sealed class CleanupCoordinator(Store store, IMemoryApi memory, Automat
             if (memory is IMemoryPerformanceApi performance) { var pressure = performance.ReadPressure(); snapshot = pressure.Memory; low = pressure.LowMemory; high = pressure.HighMemory; }
             else snapshot = memory.Read();
         } catch (Exception ex) { low = high = null; store.Log("压力检查失败：" + ex.Message); }
-        var plan = RoutineCleanupPolicy.Evaluate(snapshot, a.ThresholdPercent, automatic && a.TriggerMode == AutomaticTriggerMode.Percentage, low, high);
+        var plan = RoutineCleanupPolicy.Evaluate(snapshot, a.ThresholdPercent, a.TriggerMode == AutomaticTriggerMode.Percentage, low, high);
         if (plan.Skipped)
         {
             Report(plan.Message); DockResult?.Invoke(snapshot is null || low is null || high is null || low == true && high == true ? "状态暂不可用" : "无需整理");
             if (automatic) automation.RecordSkipped();
             return;
         }
-        // 快捷操作保护正在进行的任务；高级手动操作另有显式风险确认。
-        var deferred = environment.Fullscreen ? "全屏应用正在使用" :
+        // 场景避让仅约束自动触发，并尊重用户开关。
+        var deferred = a.PauseFullscreen && environment.Fullscreen ? "全屏应用正在使用" :
             a.PauseDiskBusy && environment.DiskBusy != false ? "磁盘繁忙或状态暂不可用" : null;
         if (deferred is not null) {
             if (automatic) automation.DeferAttempt(trigger.Contains("定时", StringComparison.Ordinal), deferred);

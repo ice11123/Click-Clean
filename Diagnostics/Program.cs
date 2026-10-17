@@ -10,6 +10,37 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--startup-handoff-child") {
+            RunUpdateCheck(async () => {
+                StartupTask.RemoveHandoff();
+                await Task.Delay(1500);
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { Admin = WindowsMemoryApi.IsAdmin(), ProcessId = Environment.ProcessId, SurvivedTaskRemoval = true }));
+            }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
+        if (args.Length == 2 && args[0] == "--startup-handoff-check") {
+            RunUpdateCheck(async () => {
+                if (!WindowsMemoryApi.IsAdmin()) throw new InvalidOperationException("登录任务迁移验收需要管理员授权；不会执行内存整理。");
+                var output = Path.GetFullPath(args[1]); var child = Path.ChangeExtension(output, ".child.json");
+                if (File.Exists(output) || File.Exists(child)) throw new InvalidOperationException("测试结果已存在，请使用新输出文件。");
+                var before = StartupTask.InspectXml();
+                File.WriteAllText(Path.ChangeExtension(output, ".task-before.xml"), before);
+                var repaired = StartupTask.RepairExistingRunLevel();
+                var after = StartupTask.InspectXml();
+                File.WriteAllText(Path.ChangeExtension(output, ".task-after.xml"), after);
+                var oldTask = System.Xml.Linq.XDocument.Parse(before); var newTask = System.Xml.Linq.XDocument.Parse(after);
+                System.Xml.Linq.XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+                if (oldTask.Root!.Element(ns + "Actions")!.ToString() != newTask.Root!.Element(ns + "Actions")!.ToString() ||
+                    oldTask.Root.Element(ns + "Triggers")!.ToString() != newTask.Root.Element(ns + "Triggers")!.ToString() ||
+                    (newTask.Descendants(ns + "RunLevel").SingleOrDefault()?.Value ?? "LeastPrivilege") != "LeastPrivilege") throw new InvalidOperationException("任务迁移改变了启动命令、触发器或未降低权限。");
+                StartupTask.LaunchUnelevated("--startup-handoff-child \"" + child + "\"");
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+                while (!File.Exists(child)) await Task.Delay(100, timeout.Token);
+                using var result = JsonDocument.Parse(await File.ReadAllTextAsync(child, timeout.Token));
+                if (result.RootElement.GetProperty("Admin").GetBoolean() || !result.RootElement.GetProperty("SurvivedTaskRemoval").GetBoolean())
+                    throw new InvalidOperationException("普通权限交接验收失败。");
+                File.WriteAllText(output, JsonSerializer.Serialize(new { Repaired = repaired, RunLevel = "LeastPrivilege", ChildAdmin = false, ActionsPreserved = true, TriggersPreserved = true, CleanupCommandsSent = 0, SelfRemovedHandoffTask = true }));
+            }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
         if (args.SequenceEqual(new[] { "--memory-fixture" })) { ControlledMemoryExperiment.Child(); return; }
         if (args.Length == 2 && args[0] == "--controlled-memory-experiment") {
             RunUpdateCheck(() => ControlledMemoryExperiment.Run(args[1]), Path.ChangeExtension(args[1], ".failure.txt")); return;

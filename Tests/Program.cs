@@ -12,9 +12,17 @@ await Check("新安装默认开启底部岛并使用浅色主题，已有主题�
     var previous = new UserSettings { Theme = "dark", MiniIsland = false }; previous.Validate(); Assert(previous.Theme == "dark" && !previous.MiniIsland);
     return Task.CompletedTask;
 });
-await Check("手动快捷入口不再无条件裁剪全系统", () => {
+await Check("手动三步与自动压力策略分离", () => {
+    Assert(RoutineCleanupPolicy.ManualSteps.SequenceEqual(all));
     Assert(RoutineCleanupPolicy.Evaluate(new(1000, 900, 200, 2000), lowMemory: false, highMemory: true).Skipped);
     Assert(RoutineCleanupPolicy.Evaluate(new(1000, 100, 200, 2000), lowMemory: true, highMemory: false).Commands.SequenceEqual([MemoryCommand.BackgroundWorkingSets]));
+    return Task.CompletedTask;
+});
+await Check("旧高权限启动交接一次，普通实例继续，失败不循环", () => {
+    Assert(StartupPermissionPolicy.Evaluate(false, false) == StartupPermissionAction.Continue);
+    Assert(StartupPermissionPolicy.Evaluate(false, true) == StartupPermissionAction.Continue);
+    Assert(StartupPermissionPolicy.Evaluate(true, false) == StartupPermissionAction.RelaunchLimited);
+    Assert(StartupPermissionPolicy.Evaluate(true, true) == StartupPermissionAction.Stop);
     return Task.CompletedTask;
 });
 await Check("首次语言未选、更新保持English、旧设置保持中文且迁移自动规则", () => {
@@ -27,7 +35,7 @@ await Check("首次语言未选、更新保持English、旧设置保持中文且
         File.WriteAllText(Path.Combine(root, "settings.json"), "{\"SchemaVersion\":4,\"Theme\":\"dark\",\"MiniIsland\":false,\"Automation\":{\"ThresholdEnabled\":true}}");
         var legacy = new Store(root);
         Assert(legacy.Settings.LanguageChosen && legacy.Settings.Language == "zh-CN" && legacy.Settings.Theme == "dark" && !legacy.Settings.MiniIsland &&
-            legacy.Settings.SchemaVersion == 5 && legacy.Settings.AutomationNeedsConfirmation && legacy.Settings.Automation.TriggerMode == AutomaticTriggerMode.SystemPressure);
+            legacy.Settings.SchemaVersion == 6 && legacy.Settings.AutomationNeedsConfirmation && legacy.Settings.Automation.TriggerMode == AutomaticTriggerMode.SystemPressure);
     }
     finally { Directory.Delete(root, true); }
     return Task.CompletedTask;
@@ -201,10 +209,10 @@ await Check("底部岛全屏抑制、复位及无效时钟防御", () => {
 });
 await Check("旧岛设置升级、新版关闭选择持久化", () => {
     var legacy = new UserSettings { SchemaVersion = 1, MiniIsland = false, Startup = true };
-    legacy.Validate(); Assert(legacy.SchemaVersion == 5 && legacy.MiniIsland && legacy.Startup);
+    legacy.Validate(); Assert(legacy.SchemaVersion == 6 && legacy.MiniIsland && legacy.Startup);
     legacy.MiniIsland = false; legacy.Validate(); Assert(!legacy.MiniIsland);
     var restored = System.Text.Json.JsonSerializer.Deserialize<UserSettings>(System.Text.Json.JsonSerializer.Serialize(legacy))!;
-    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 5);
+    restored.Validate(); Assert(!restored.MiniIsland && restored.SchemaVersion == 6);
     return Task.CompletedTask;
 });
 await Check("底部岛三阶段、严格两秒与采样更新不重置期限", () => {
@@ -243,7 +251,7 @@ await Check("作者链接准确分流，不接受未知键或不安全协议", (
 });
 await Check("默认与旧设置都只手动下载应用更新，空高级选择不回填三步", () => {
     var settings = new UserSettings { SchemaVersion = 2, AutoDownloadUpdates = true, AutoApplyHidden = true, MiniIsland = false, SelectedSteps = [] };
-    settings.Validate(); Assert(settings.SchemaVersion == 5 && !settings.AutoDownloadUpdates && !settings.AutoApplyHidden && settings.CheckUpdates && !settings.MiniIsland && settings.SelectedSteps.Length == 0);
+    settings.Validate(); Assert(settings.SchemaVersion == 6 && !settings.AutoDownloadUpdates && !settings.AutoApplyHidden && settings.CheckUpdates && !settings.MiniIsland && settings.SelectedSteps.Length == 0);
     settings.AutoDownloadUpdates = settings.AutoApplyHidden = true; settings.Validate(); Assert(!settings.AutoDownloadUpdates && !settings.AutoApplyHidden);
     var old = new UserSettings { SchemaVersion = 2, SelectedSteps = all }; old.Validate(); Assert(old.SelectedSteps.SequenceEqual(all));
     return Task.CompletedTask;
@@ -257,15 +265,15 @@ await Check("更新提示覆盖可用、下载、就绪、失败，整理期间�
     var failed = UpdatePresentation.Create(UpdatePhase.Failed, false, false, false, false); Assert(failed.Visible && failed.Action == UpdateAction.Check);
     return Task.CompletedTask;
 });
-await Check("55只触发检查，真实低内存才允许有界后台回收", () => {
+await Check("百分比到门槛即三步，不叠加低内存；系统通知模式保持后台回收", () => {
     foreach (var snapshot in new MemorySnapshot?[] { null, new(0, 0, 0, 0), new(1000, 1001, 0, 0) })
         Assert(RoutineCleanupPolicy.Evaluate(snapshot).Skipped);
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 451, 200, 2000), automatic: true).Skipped);
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), automatic: true).Skipped);
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 150, 200, 2000), automatic: true, lowMemory: false, highMemory: false).Skipped);
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 900, 200, 2000), automatic: false, lowMemory: false, highMemory: true).Skipped);
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), automatic: true, lowMemory: true, highMemory: false).Commands.SequenceEqual([MemoryCommand.BackgroundWorkingSets]));
-    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 451, 200, 2000), automatic: true, lowMemory: true, highMemory: false).Skipped);
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 451, 200, 2000), percentageMode: true).Skipped);
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), percentageMode: true).Commands.SequenceEqual(all));
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 150, 200, 2000), percentageMode: true, lowMemory: false, highMemory: false).Commands.SequenceEqual(all));
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 900, 200, 2000), percentageMode: false, lowMemory: false, highMemory: true).Skipped);
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), percentageMode: true, lowMemory: true, highMemory: false).Commands.SequenceEqual(all));
+    Assert(RoutineCleanupPolicy.Evaluate(new(1000, 451, 200, 2000), percentageMode: true, lowMemory: true, highMemory: false).Skipped);
     Assert(RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), lowMemory: true, highMemory: true).Skipped);
     foreach (var invalid in new[] { 54, 99 }) {
         try { RoutineCleanupPolicy.Evaluate(new(1000, 450, 200, 2000), invalid, true); throw new Exception("非法门槛未拒绝"); }
@@ -286,7 +294,7 @@ await Check("55阈值持续60秒且需回落50才能重新武装", () => {
 await Check("旧自动开关保留但需确认，旧阈值和手动选择不覆盖", () => {
     foreach (var originalFull in new[] { false, true }) {
         var old = new UserSettings { SchemaVersion = 3, SelectedSteps = [], Automation = new() { ThresholdEnabled = true, ThresholdPercent = 85, FullCleanup = originalFull } };
-        old.Validate(); Assert(old.SchemaVersion == 5 && old.AutomationNeedsConfirmation && old.Automation.ThresholdEnabled && old.Automation.ThresholdPercent == 85 && old.SelectedSteps.Length == 0 && !old.Automation.FullCleanup);
+        old.Validate(); Assert(old.SchemaVersion == 6 && old.AutomationNeedsConfirmation && old.Automation.ThresholdEnabled && old.Automation.ThresholdPercent == 85 && old.SelectedSteps.Length == 0 && !old.Automation.FullCleanup);
         old.AutomationNeedsConfirmation = false; old.Validate(); Assert(!old.AutomationNeedsConfirmation);
     }
     var defaults = new UserSettings(); defaults.Validate(); Assert(!defaults.AutomationNeedsConfirmation && defaults.SelectedSteps.SequenceEqual(all));
@@ -441,9 +449,12 @@ await Check("未尝试回收不报成功、不等复测，部分失败保留实�
     var unknown = await new MemoryEngine(new FakeApi { BackgroundSummary = null }).RunAsync([MemoryCommand.BackgroundWorkingSets]);
     Assert(!unknown.Success);
 });
-await Check("默认系统压力触发，旧FullCleanup不可重新启用自动全三步", () => {
+await Check("默认百分比触发，旧FullCleanup字段忽略，升级已启用百分比规则必须确认", () => {
     var defaults = new AutomationSettings();
-    Assert(defaults.TriggerMode == AutomaticTriggerMode.SystemPressure && !defaults.FullCleanup);
+    Assert(defaults.TriggerMode == AutomaticTriggerMode.Percentage && !defaults.FullCleanup);
+    var enabled = new UserSettings { SchemaVersion = 5, Language = "en-US", LanguageChosen = true, Automation = new() { ThresholdEnabled = true, ThresholdPercent = 85 } };
+    enabled.Validate(); Assert(enabled.SchemaVersion == 6 && enabled.AutomationNeedsConfirmation && enabled.Automation.ThresholdPercent == 85 && enabled.Language == "en-US");
+    enabled.AutomationNeedsConfirmation = false; enabled.Validate(); Assert(!enabled.AutomationNeedsConfirmation);
     Assert(!(defaults with { FullCleanup = true }).Validated().FullCleanup);
     var settings = new UserSettings { SelectedSteps = [MemoryCommand.BackgroundWorkingSets] }; settings.Validate(); Assert(settings.SelectedSteps.Length == 0);
     return Task.CompletedTask;

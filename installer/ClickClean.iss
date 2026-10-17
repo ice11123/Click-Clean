@@ -122,7 +122,7 @@ begin
   Tasks := Folder.GetTasks(1);
   for I := Tasks.Count downto 1 do begin
     Task := Tasks.Item(I); TaskName := Task.Name;
-    if (TaskName = 'ClickClean-' + Sid) or (TaskName = 'Qingqi-' + Sid) then begin
+    if (TaskName = 'ClickClean-' + Sid) or (TaskName = 'Qingqi-' + Sid) or (TaskName = 'ClickClean-Handoff-' + Sid) then begin
       if PreserveEnabled and (TaskName = 'ClickClean-' + Sid) and Task.Enabled then RegWriteDWordValue(HKCU, 'Software\ClickClean', 'StartupMigrationEnabled', 1);
       // 不运行用户可写目录内的旧程序来提权删除任务。
       Folder.DeleteTask(TaskName, 0);

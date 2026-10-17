@@ -28,6 +28,7 @@ public sealed class ElevatedMemoryApi(WindowsMemoryApi nativeApi) : IMemoryApi, 
     {
         if ((int)command == 100) return NativeApi.Execute(command);
         if (!CleanupProtocol.IsCommand((int)command)) throw new ArgumentOutOfRangeException(nameof(command));
+        if (BuildInfo.ExperimentalX86) throw new NotSupportedException("32位试验版不支持全系统三步，请使用x64正式版。");
         session ??= Session.Start();
         CleanupProtocol.WriteInt(session.Pipe, (int)command);
         return CleanupProtocol.ReadInt(session.Pipe);

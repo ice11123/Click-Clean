@@ -39,18 +39,24 @@ internal static class RebuiltUiCheck
         memory.FailRead = false; await Task.Delay(1150);
         Assert(state.Load != "—" && !state.MemoryFailed, "读数恢复原位显示真实数据");
         memory.Available = 28UL << 30; var history = store.History.Count; var last = store.Settings.LastCleanupUtc;
+        environment.State = new(Fullscreen: true, DiskBusy: true);
         Click("CleanButton"); Click("CleanButton"); await Task.Delay(80); await Settle();
-        Assert(!window.IsBusy && memory.Calls.Count == 0 && store.History.Count == history && state.OperationVisible, "无实际压力不执行整理、不新增假成功记录");
-        memory.LowMemory = null; memory.HighMemory = null; Click("CleanButton"); await Settle();
-        Assert(memory.Calls.Count == 0 && !state.PressureKnown, "未知压力不是健康或成功，安全跳过");
+        Assert(window.IsBusy && !Control<Button>("CleanButton").IsEnabled, "低占用、全屏和磁盘忙碌不阻止手动整理，重复点击仍受执行门闩保护");
+        await Wait(() => !window.IsBusy);
+        Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache }) && store.History.Count == history + 1,
+            "用户手动点击始终执行原版三步，不使用无需整理判定");
+        memory.Calls.Clear(); memory.LowMemory = null; memory.HighMemory = null; environment.State = new(DiskBusy: null);
+        Click("CleanButton"); await Wait(() => memory.Calls.Count > 0); await Wait(() => !window.IsBusy);
+        Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache }), "压力通知未知也不拦截用户手动执行");
+        memory.Calls.Clear();
         memory.LowMemory = true; memory.HighMemory = false; environment.State = new(LowMemory: true, DiskBusy: false);
         memory.Available = 12UL << 30;
         Click("CleanButton"); Click("CleanButton"); await Task.Delay(80); await Settle();
         Assert(state.OperationVisible && Control<Button>("CancelButton").IsVisible && !Control<Button>("CleanButton").IsEnabled, "运行时实际步骤和取消入口可见，主按钮禁止重复执行");
         window.RenderTo(Path.Combine(output, "light-working.png")); await Wait(() => !window.IsBusy);
-        Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.BackgroundWorkingSets }) && memory.Privileges == 0 && store.History.Count == history + 1 && store.Settings.LastCleanupUtc == last, "真实压力日常入口仅后台整理且不提权，重复点击不重复执行，模拟不改实机时间");
+        Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache }) && memory.Privileges == 3 && store.History.Count == history + 3 && store.Settings.LastCleanupUtc == last, "不同压力下的三次手动点击均执行完整三步，每轮只建立一次授权，模拟不改实机时间");
         await Task.Delay(300);
-        Assert(store.History[0].Sustained is not null && state.Recent?.Delta == "已整理 1 个后台", "后台结果只显示实际处理数量，持续观测补充同条模拟记录");
+        Assert(store.History[0].Sustained is not null && state.Recent?.Outcome == "步骤完成", "手动整理按实际步骤反馈，持续观测补充同条模拟记录");
         memory.Calls.Clear(); memory.FailureCommand = MemoryCommand.ModifiedPages;
         Command("custom-run"); await Wait(() => !window.IsBusy);
         Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages }) && state.Recent?.Outcome == "部分完成", "第二步失败停止第三步，呈现部分完成");
@@ -75,12 +81,16 @@ internal static class RebuiltUiCheck
         environment.State = new(DiskBusy: null); await Automatic(); Assert(memory.Calls.Count == 0, "自动入口未知磁盘状态不误认空闲");
         environment.State = new(DiskBusy: false); memory.LowMemory = false; memory.HighMemory = true; memory.Available = 28UL << 30;
         await Automatic(); Assert(memory.Calls.Count == 0, "自动无压力不新增假整理");
-        memory.Available = (32UL << 30) * 450 / 1000; await Automatic(); Assert(memory.Calls.Count == 0, "达到55检查门槛不能替代实际低内存信号");
+        memory.Available = (32UL << 30) * 450 / 1000; await Automatic(); Assert(memory.Calls.SequenceEqual(RoutineCleanupPolicy.ManualSteps), "百分比达到55即执行三步，不叠加系统低内存通知");
+        memory.Calls.Clear(); memory.Available = (32UL << 30) * 150 / 1000; memory.LowMemory = null; memory.HighMemory = null;
+        await Automatic(); Assert(memory.Calls.SequenceEqual(RoutineCleanupPolicy.ManualSteps), "85占用且系统通知未知仍执行百分比三步");
+        memory.Calls.Clear(); store.Settings.Automation = store.Settings.Automation with { PauseFullscreen = false }; environment.State = new(Fullscreen: true, DiskBusy: false);
+        await Automatic(); Assert(memory.Calls.SequenceEqual(RoutineCleanupPolicy.ManualSteps), "关闭全屏避让后自动入口不再被硬编码拦截");
         memory.Calls.Clear(); store.Settings.AutomationNeedsConfirmation = true; await Automatic(); Assert(memory.Calls.Count == 0, "旧自动规则待确认时安全暂停"); store.Settings.AutomationNeedsConfirmation = false;
         store.Settings.Automation = store.Settings.Automation with { TriggerMode = AutomaticTriggerMode.SystemPressure }; environment.State = new(LowMemory: true, DiskBusy: false); memory.Available = 28UL << 30; memory.LowMemory = true; memory.HighMemory = false;
         await Automatic(); Assert(memory.Calls.SequenceEqual(new[] { MemoryCommand.BackgroundWorkingSets }), "系统压力模式仅后台定向整理，不套百分比门槛且不执行高级三步");
-        memory.BackgroundCompleted = 0; memory.Calls.Clear(); var previousResult = store.History[0].Id;
-        Click("CleanButton"); await Wait(() => memory.Calls.Count > 0); await Wait(() => !window.IsBusy && store.History[0].Id != previousResult);
+        memory.BackgroundCompleted = 0; memory.Calls.Clear();
+        await Automatic();
         Assert(state.Recent?.Outcome == "无需整理", "没有实际处理对象不伪装成完成或加速");
         memory.BackgroundCompleted = 1;
         store.Settings.Automation = new() { TriggerMode = AutomaticTriggerMode.Percentage }; environment.State = new(); memory.LowMemory = false; memory.HighMemory = true; state.Settings.Draft.Load(store.Settings.Automation);
@@ -192,7 +202,7 @@ internal static class RebuiltUiCheck
         Assert(store.Settings.Language == "en-US" && store.Settings.LanguageChosen && Localization.IsEnglish, "设置选择English立即保存并切换语言");
         Assert(Control<TextBlock>("SettingsHeading").Text == "General & appearance", "设置标题实时切成English");
         var reloaded = new Store(store.Root);
-        Assert(reloaded.Settings.Language == "en-US" && reloaded.Settings.LanguageChosen && reloaded.Settings.SchemaVersion == 5, "设置重载和升级不重置语言或再弹首次选择");
+        Assert(reloaded.Settings.Language == "en-US" && reloaded.Settings.LanguageChosen && reloaded.Settings.SchemaVersion == 6, "设置重载和升级不重置语言或再弹首次选择");
         foreach (var theme in new[] { "light", "dark" }) {
             store.Settings.Theme = theme; window.ApplyTheme();
             foreach (var page in new[] { "overview", "history", "diagnostics", "settings" }) {

@@ -5,7 +5,7 @@ public sealed record AutomationEnvironment(bool? LowMemory = null, bool Fullscre
 
 public sealed record AutomationSettings
 {
-    public AutomaticTriggerMode TriggerMode { get; init; } = AutomaticTriggerMode.SystemPressure;
+    public AutomaticTriggerMode TriggerMode { get; init; } = AutomaticTriggerMode.Percentage;
     public bool PauseFullscreen { get; init; } = true;
     public bool PauseDiskBusy { get; init; } = true;
     public bool ThresholdEnabled { get; init; }
@@ -18,7 +18,7 @@ public sealed record AutomationSettings
     public AutomationSettings Validated() => this with {
         TriggerMode = Enum.IsDefined(TriggerMode) ? TriggerMode : AutomaticTriggerMode.SystemPressure,
         ThresholdPercent = Math.Clamp(ThresholdPercent, 55, 98),
-        // 保留旧字段的读取兼容性；任何自动触发都不能开启全系统三步。
+        // 保留旧字段的读取兼容性；动作由明确的触发模式决定，不读取旧FullCleanup。
         FullCleanup = false,
         SustainSeconds = Math.Clamp(SustainSeconds, 15, 600),
         CooldownMinutes = Math.Clamp(CooldownMinutes, 5, 240),
