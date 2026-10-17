@@ -93,7 +93,7 @@ Type: dirifempty; Name: "{autopf}\Click-Clean\Privileged"
 Type: dirifempty; Name: "{autopf}\Click-Clean"
 [Code]
 var DeleteUserData: Boolean;
-function GetCurrentProcessId(): LongWord; external 'GetCurrentProcessId@kernel32.dll stdcall';
+#include "AccountIdentity.iss"
 function GetFileAttributesW(Path: String): LongWord; external 'GetFileAttributesW@kernel32.dll stdcall';
 function LanguageCode(Param: String): String;
 begin
@@ -102,17 +102,6 @@ end;
 function LanguageArgument(Param: String): String;
 begin
   Result := '--language=' + LanguageCode(Param);
-end;
-function CurrentSid(): String;
-var Locator, Services, Process, Sid: Variant;
-begin
-  Locator := CreateOleObject('WbemScripting.SWbemLocator');
-  Services := Locator.ConnectServer('', 'root\cimv2');
-  Process := Services.Get('Win32_Process.Handle="' + IntToStr(GetCurrentProcessId()) + '"');
-  Sid := '';
-  if Process.GetOwnerSid(Sid) <> 0 then RaiseException('无法确定安装账户，未迁移旧启动任务。');
-  Result := Sid;
-  if Pos('S-1-5-', Result) <> 1 then RaiseException('安装账户标识无效。');
 end;
 procedure RemoveLegacyTasks(PreserveEnabled: Boolean);
 var Service, Folder, Tasks, Task: Variant; Sid, TaskName: String; I: Integer;

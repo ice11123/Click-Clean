@@ -95,6 +95,7 @@ if (-not $SkipInstaller) {
         }
     }
     if (-not $InnoCompiler) { throw '需要官方 Inno Setup 7 编译器；可先使用 -SkipInstaller。' }
+    & (Join-Path $PSScriptRoot 'installer\tests\test-account-identity.ps1') -OutputRoot (Join-Path $OutputRoot 'installer-account-check') -InnoCompiler $InnoCompiler
     Run-Tool $InnoCompiler ('/DAppVersion=' + $Version + ' /DPublishDir="' + $installStage + '" /DPrivilegedDir="' + $PrivilegedPublishDir + '" /DOutputDir="' + $OutputRoot + '" installer\ClickClean.iss') 'installer.log'
     if ($signParams) {
         $installerFile = Join-Path $OutputRoot ('Click-Clean-' + $Version + '-win-x64-Setup.exe')

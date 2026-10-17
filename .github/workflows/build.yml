@@ -17,6 +17,9 @@ jobs:
       - name: Build and package
         shell: pwsh
         run: ./build.ps1 -SkipInstaller -IncludePreview -OutputRoot ./dist
+      - name: Installer account identity regression
+        shell: pwsh
+        run: ./installer/tests/test-account-identity.ps1 -OutputRoot ./dist/installer-account-check
       - name: Update transport verification
         shell: pwsh
         run: |

@@ -8,22 +8,22 @@
 
 **推荐：Windows 11 x64 正式版。** 自带 .NET 运行时，安装后即可使用。原作者：**离子怪（ice11123）**。
 
-## 下载 3.0.2
+## 下载 3.0.3
 
 | 你需要什么 | 下载 | 说明 |
 | --- | --- | --- |
-| 正常安装使用 | [Windows x64 安装包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.2/Click-Clean-3.0.2-win-x64-Setup.exe) | 推荐；普通权限界面，包含受保护系统组件 |
-| 解压即用 | [Windows x64 便携包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.2/Click-Clean-3.0.2-win-x64-Portable.zip) | 运行 current/ClickClean.exe；手动三步需要已安装系统组件 |
-| 测试32位进程 | [x86 试验便携包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.2/Click-Clean-3.0.2-win-x86-Experimental.zip) | 仅用于64位 Windows 11；不支持全系统三步、登录启动及应用内更新 |
-| 阅读或构建源码 | [源码包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.2/Click-Clean-3.0.2-Source.zip) | 包含构建脚本、许可和文档 |
+| 正常安装使用 | [Windows x64 安装包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.3/Click-Clean-3.0.3-win-x64-Setup.exe) | 推荐；普通权限界面，包含受保护系统组件 |
+| 解压即用 | [Windows x64 便携包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.3/Click-Clean-3.0.3-win-x64-Portable.zip) | 运行 current/ClickClean.exe；手动三步需要已安装系统组件 |
+| 测试32位进程 | [x86 试验便携包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.3/Click-Clean-3.0.3-win-x86-Experimental.zip) | 仅用于64位 Windows 11；不支持全系统三步、登录启动及应用内更新 |
+| 阅读或构建源码 | [源码包](https://github.com/ice11123/Click-Clean/releases/download/v3.0.3/Click-Clean-3.0.3-Source.zip) | 包含构建脚本、许可和文档 |
 
-[发行说明与所有附件](https://github.com/ice11123/Click-Clean/releases/latest) · [SHA-256 校验文件](https://github.com/ice11123/Click-Clean/releases/download/v3.0.2/SHA256SUMS.txt)
+[发行说明与所有附件](https://github.com/ice11123/Click-Clean/releases/latest) · [SHA-256 校验文件](https://github.com/ice11123/Click-Clean/releases/download/v3.0.3/SHA256SUMS.txt)
 
 已安装正式版可在应用内检查更新，点击下载后再点击“重启并更新”。普通界面更新无需再次运行安装向导，应用不会自动下载或重启。**从2.x升级3.0建议运行安装包，完成受保护组件和旧登录任务的迁移**；应用内更新不会从用户可写缓存提权安装组件。当前包未签名。
 
 ## 界面
 
-3.0.2恢复手动原版三步。**尚未部署受保护系统组件的用户，本次必须运行完整安装包**；仅应用内更新不能补装该组件。x86试验版不支持手动全系统三步。
+3.0.3恢复手动原版三步。**尚未部署受保护系统组件的用户，本次必须运行完整安装包**；仅应用内更新不能补装该组件。x86试验版不支持手动全系统三步。
 
 <table><tr><td><img src="docs/images/round-light-main.png" alt="浅色圆盘首页"></td><td><img src="docs/images/round-dark-main.png" alt="深色圆盘首页"></td></tr></table>
 
@@ -50,7 +50,7 @@
 | Linux / macOS | 当前未支持；需要移植界面与系统整理实现 |
 | 32位 Windows 系统 | 未支持；Windows 11 本身无32位系统版本 |
 
-构建通过不代表已在所有环境验证，也不代表任何游戏都能提高帧率。x86的界面与只读探针可在本机检查；高级组件只支持x64。参见[本次测试与限制](docs/verification-3.0.2.md)及[平台说明](docs/platforms.md)。
+构建通过不代表已在所有环境验证，也不代表任何游戏都能提高帧率。x86的界面与只读探针可在本机检查；高级组件只支持x64。参见[本次测试与限制](docs/verification-3.0.3.md)及[平台说明](docs/platforms.md)。
 
 ## 文档与源码
 
