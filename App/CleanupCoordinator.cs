@@ -49,7 +49,9 @@ internal sealed class CleanupCoordinator(Store store, IMemoryApi memory, Automat
         var plan = RoutineCleanupPolicy.Evaluate(snapshot, a.ThresholdPercent, a.TriggerMode == AutomaticTriggerMode.Percentage, low, high);
         if (plan.Skipped)
         {
-            Report(plan.Message); DockResult?.Invoke(snapshot is null || low is null || high is null || low == true && high == true ? "状态暂不可用" : "无需整理");
+            Report(plan.Message); DockResult?.Invoke(snapshot is null ||
+                a.TriggerMode == AutomaticTriggerMode.SystemPressure && (low is null || high is null || low == true && high == true)
+                ? "状态暂不可用" : a.TriggerMode == AutomaticTriggerMode.Percentage ? "未达到检查门槛" : "无需整理");
             if (automatic) automation.RecordSkipped();
             return;
         }

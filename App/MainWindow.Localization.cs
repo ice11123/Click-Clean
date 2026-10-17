@@ -35,22 +35,22 @@ public partial class MainWindow
         if (!Presentation.PressureKnown)
         {
             Presentation.PressureTitle = "状态暂不可用";
-            Presentation.PressureHint = "暂时无法判断，未执行整理。";
+            Presentation.PressureHint = "系统压力信号暂不可用，仍可手动整理。";
         }
         else if (pressure!.LowMemory == true)
         {
             Presentation.PressureTitle = "内存压力";
-            Presentation.PressureHint = "仅处理符合条件的后台，不干预前台应用。";
+            Presentation.PressureHint = "Windows已报告低内存；手动点击执行全系统三步。";
         }
         else if (pressure.HighMemory == true)
         {
             Presentation.PressureTitle = "内存充裕";
-            Presentation.PressureHint = "系统内存充裕，保留缓存。";
+            Presentation.PressureHint = "Windows报告内存充裕；手动整理仍可执行。";
         }
         else
         {
             Presentation.PressureTitle = "暂无低内存";
-            Presentation.PressureHint = "系统没有报告低内存，保留缓存。";
+            Presentation.PressureHint = "Windows未报告低内存；手动整理仍可执行。";
         }
     }
 }
