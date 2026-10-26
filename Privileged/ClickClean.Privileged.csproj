@@ -10,4 +10,5 @@
     <Description>Click-Clean 受约束的按需系统整理组件</Description>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <ItemGroup><Compile Include="..\Core\AuthorizedTaskPolicy.cs" Link="AuthorizedTaskPolicy.cs"/></ItemGroup>
 </Project>

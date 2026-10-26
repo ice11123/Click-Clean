@@ -94,6 +94,7 @@ Type: dirifempty; Name: "{autopf}\Click-Clean"
 [Code]
 var DeleteUserData: Boolean;
 #include "AccountIdentity.iss"
+#include "AuthorizedTask.iss"
 function GetFileAttributesW(Path: String): LongWord; external 'GetFileAttributesW@kernel32.dll stdcall';
 function LanguageCode(Param: String): String;
 begin
@@ -159,7 +160,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin RemoveLegacyTasks(True); ProtectSystemComponent(); end;
-  if CurStep = ssPostInstall then ProtectSystemComponent();
+  if CurStep = ssPostInstall then begin ProtectSystemComponent(); RegisterAuthorizedTask(); end;
 end;
 function InitializeSetup(): Boolean;
 var Version: TWindowsVersion;
@@ -170,7 +171,6 @@ begin
 end;
 function InitializeUninstall(): Boolean;
 begin
-  RemoveLegacyTasks(False);
   DeleteUserData := False;
   if not UninstallSilent then
     DeleteUserData := MsgBox(CustomMessage('DeleteData'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
@@ -179,6 +179,7 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var DataDir: String;
 begin
+  if CurUninstallStep = usUninstall then begin RemoveLegacyTasks(False); RemoveAuthorizedTask(); end;
   if (CurUninstallStep = usPostUninstall) and DeleteUserData then begin
     DataDir := ExpandConstant('{localappdata}\ClickCleanData');
     DeleteFile(DataDir + '\settings.json'); DeleteFile(DataDir + '\settings.json.tmp');

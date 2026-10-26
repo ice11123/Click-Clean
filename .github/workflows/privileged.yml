@@ -36,13 +36,31 @@ jobs:
           ./build-assets.ps1
           dotnet publish Diagnostics/ClickClean.Preview.csproj -c Release -r win-x64 --self-contained true -o ./component-check
           if ($LASTEXITCODE -ne 0) { throw '认证探针构建失败' }
+          $taskCheck = New-Item -ItemType Directory -Path ./task-check
+          $compiler = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe","$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) { throw '缺少安装脚本回归编译器' }
+          & $compiler.FullName ('/DOutputDir=' + $taskCheck.FullName) ./installer/tests/AuthorizedTaskCheck.iss
+          if ($LASTEXITCODE -ne 0) { throw '授权任务脚本编译失败' }
+          $registration = Join-Path $taskCheck.FullName 'registered.txt'
+          $job = Start-Process ./task-check/AuthorizedTaskCheck.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /Action=register /ResultFile=`"$registration`"" -WindowStyle Hidden -PassThru
+          if (-not $job.WaitForExit(30000)) { $job.Kill(); throw '授权任务注册超时' }
+          if ((Get-Content $registration -Raw).Trim() -ne 'Passed') { Get-Content $registration; throw '授权任务注册失败' }
+          $policy = Join-Path $taskCheck.FullName 'policy.json'
+          $job = Start-Process ./component-check/ClickClean.Preview.exe -ArgumentList "--authorization-check `"$policy`"" -WindowStyle Hidden -PassThru
+          if (-not $job.WaitForExit(30000) -or $job.ExitCode -ne 0) { Get-Content ([IO.Path]::ChangeExtension($policy, '.failure.txt')); throw '任务白名单或ACL验证失败' }
           $result = Join-Path $env:RUNNER_TEMP 'component-probe.json'
-          $job = Start-Process ./component-check/ClickClean.Preview.exe -ArgumentList "--component-probe `"$result`"" -PassThru -WindowStyle Hidden
+          # 托管runner可能在非交互session 0；此时只核验任务配置，独立认证不冒充桌面任务实测。
+          $probeMode = if ([Diagnostics.Process]::GetCurrentProcess().SessionId -gt 0) { '--component-probe' } else { '--component-direct-probe' }
+          $job = Start-Process ./component-check/ClickClean.Preview.exe -ArgumentList "$probeMode `"$result`"" -PassThru -WindowStyle Hidden
           if (-not $job.WaitForExit(60000)) { $job.Kill(); throw 'IPC认证探针超时' }
           if ($job.ExitCode -ne 0) { Get-Content ([IO.Path]::ChangeExtension($result, '.failure.txt')); throw 'IPC认证探针失败' }
           $probe = Get-Content $result -Raw | ConvertFrom-Json
           if (-not $probe.Authenticated -or $probe.CommandsSent -ne 0) { throw '认证探针结果无效' }
           Copy-Item $result ./privileged-publish/component-probe.json
+          Copy-Item $policy ./privileged-publish/authorization-policy.json
+          $removal = Join-Path $taskCheck.FullName 'removed.txt'
+          $job = Start-Process ./task-check/AuthorizedTaskCheck.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /Action=remove /ResultFile=`"$removal`"" -WindowStyle Hidden -PassThru
+          if (-not $job.WaitForExit(30000) -or (Get-Content $removal -Raw).Trim() -ne 'Passed') { throw '授权任务移除回归失败' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ClickClean-Privileged-${{ github.sha }}
@@ -50,4 +68,5 @@ jobs:
             privileged-publish/ClickClean.Privileged.exe
             privileged-publish/build-origin.json
             privileged-publish/component-probe.json
+            privileged-publish/authorization-policy.json
           retention-days: 14

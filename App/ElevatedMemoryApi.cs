@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -16,9 +14,9 @@ public sealed class ElevatedMemoryApi(WindowsMemoryApi nativeApi) : IMemoryApi, 
     public BackgroundScanSummary ObserveBackgroundProcesses() => NativeApi.ObserveBackgroundProcesses();
     public BackgroundCleanupSummary? LastBackgroundCleanup => NativeApi.LastBackgroundCleanup;
     public void Dispose() { session?.Dispose(); session = null; NativeApi.Dispose(); }
-    // 仅用于验收UAC和双向认证，不发送整理命令、不修改系统内存。
+    // 验收安装器预授权任务和双向认证，不发送整理命令，不申请逐次UAC。
     public static Task ValidateSystemComponentAsync() => Task.Run(() => { using var probe = Session.Start(); });
-    // 会话延迟至高级命令才申请 UAC，正常监测和定向后台整理不提权。
+    // 每轮只启动受保护任务；授权由安装器保留，不让GUI持有管理员令牌。
     public IDisposable EnablePrivilege()
     {
         if (session is not null) throw new InvalidOperationException("整理授权会话已经建立。");
@@ -37,10 +35,9 @@ public sealed class ElevatedMemoryApi(WindowsMemoryApi nativeApi) : IMemoryApi, 
     {
         public void Dispose() { owner.session?.Dispose(); owner.session = null; }
     }
-    private sealed class Session(NamedPipeServerStream pipe, Process process) : IDisposable
+    private sealed class Session(NamedPipeServerStream pipe) : IDisposable
     {
         public NamedPipeServerStream Pipe { get; } = pipe;
-        private readonly Process process = process;
         public static Session Start()
         {
             if (!ProtectedInstallation.IsProtected(out var reason))
@@ -52,30 +49,23 @@ public sealed class ElevatedMemoryApi(WindowsMemoryApi nativeApi) : IMemoryApi, 
             // CurrentUserOnly也要求相同提权级别，不能用于普通界面与提权组件；这里用显式账户ACL，再双向验证PID与登录会话。
             var pipe = NamedPipeServerStreamAcl.Create(CleanupProtocol.Prefix + nonce, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 256, 256, access);
-            Process? process = null;
             try
             {
-                process = Process.Start(new ProcessStartInfo(ProtectedInstallation.HelperPath) {
-                    UseShellExecute = true, Verb = "runas", WorkingDirectory = ProtectedInstallation.DirectoryPath,
-                    Arguments = "--pipe " + nonce + " --client " + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    WindowStyle = ProcessWindowStyle.Hidden
-                }) ?? throw new InvalidOperationException("系统整理组件未启动。");
+                AuthorizedCleanupTask.Run(nonce, Environment.ProcessId);
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 pipe.WaitForConnectionAsync(timeout.Token).GetAwaiter().GetResult();
-                PeerIdentity.VerifyClient(pipe, process.Id);
+                PeerIdentity.VerifyScheduledClient(pipe);
                 if (CleanupProtocol.ReadInt(pipe, TimeSpan.FromSeconds(10)) != CleanupProtocol.Version)
                     throw new InvalidDataException("系统组件需要升级，请运行正式安装包。");
-                return new Session(pipe, process);
+                return new Session(pipe);
             }
-            catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
-            { pipe.Dispose(); process?.Dispose(); throw new OperationCanceledException("已取消管理员授权，未执行高级整理。", ex); }
-            catch { pipe.Dispose(); process?.Dispose(); throw; }
+            catch { pipe.Dispose(); throw; }
         }
         public void Dispose()
         {
             try { if (Pipe.IsConnected) CleanupProtocol.WriteInt(Pipe, CleanupProtocol.Quit); }
             catch (IOException) { }
-            finally { Pipe.Dispose(); process.Dispose(); }
+            finally { Pipe.Dispose(); }
             // 不杀死组件：系统调用结束或管道断开后组件自行退出。
         }
     }

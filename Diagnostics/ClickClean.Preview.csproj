@@ -4,7 +4,8 @@
     <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>ClickClean.Preview</AssemblyName><RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
-    <SelfContained>true</SelfContained><ApplicationIcon>..\App\Assets\ClickClean.ico</ApplicationIcon>
+    <SelfContained>true</SelfContained><ApplicationIcon>..\App\Assets\ClickClean.ico</ApplicationIcon><AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\App\ClickClean.csproj"/><Compile Include="..\App\Usings.cs" Link="Usings.cs"/></ItemGroup>
+  <ItemGroup><Compile Include="..\Privileged\AuthorizationTaskInstaller.cs" Link="AuthorizationTaskInstaller.cs"/></ItemGroup>
 </Project>

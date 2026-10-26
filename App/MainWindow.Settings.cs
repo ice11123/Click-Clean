@@ -60,7 +60,7 @@ public partial class MainWindow
         }
         if ((value.ThresholdEnabled || value.TimerEnabled) && !preview) {
             var warning = value.TriggerMode == AutomaticTriggerMode.Percentage
-                ? "达到占用门槛后执行全系统三步，可能请求UAC并增加缺页和磁盘活动。不保证提速。继续？"
+                ? "达到占用门槛后执行全系统三步，使用安装时授权，可能增加缺页和磁盘活动。不保证提速。继续？"
                 : "保存后，仅在 Windows 确认低内存时整理闲置后台。不会执行全系统三步。继续？";
             if (MessageBox.Show(this, Localization.Text(warning), Localization.Text("确认自动整理规则"), MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return false;
         }

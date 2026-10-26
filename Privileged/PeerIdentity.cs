@@ -3,12 +3,23 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClickClean.Security;
 
 public static class PeerIdentity
 {
+    public static void VerifyScheduledClient(NamedPipeServerStream pipe)
+    {
+        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var process)) throw new InvalidDataException("无法验证整理组件进程。");
+        using var handle = OpenProcess(0x1000, false, checked((int)process));
+        var path = new StringBuilder(32768); var length = path.Capacity;
+        if (handle.IsInvalid || !QueryFullProcessImageName(handle, 0, path, ref length) ||
+            !string.Equals(path.ToString(), ProtectedInstallation.HelperPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("整理连接不来自受保护的系统组件。");
+        VerifyClient(pipe, checked((int)process));
+    }
     public static void VerifyServer(NamedPipeClientStream pipe, int expectedProcess)
     {
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var process) || process != expectedProcess)
@@ -43,6 +54,7 @@ public static class PeerIdentity
         }
     }
     [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int process);
+    [DllImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(SafeProcessHandle process, uint flags, StringBuilder path, ref int length);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(SafeProcessHandle process, uint access, out SafeAccessTokenHandle token);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(SafeAccessTokenHandle token, int informationClass, out int information, int length, out int returnLength);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out int process);

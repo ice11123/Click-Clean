@@ -10,6 +10,15 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--register-authorization-check") {
+            RunUpdateCheck(() => { ClickClean.Security.AuthorizationTaskInstaller.Configure(true); File.WriteAllText(args[1], "Passed"); return Task.CompletedTask; }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
+        if (args.Length == 2 && args[0] is "--authorization-check" or "--authorization-policy") {
+            RunUpdateCheck(() => { AuthorizationCheck.Policy(args[1], args[0] == "--authorization-check"); return Task.CompletedTask; }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
+        if (args.Length == 2 && args[0] == "--component-direct-probe") {
+            RunUpdateCheck(() => { AuthorizationCheck.DirectComponent(args[1]); return Task.CompletedTask; }, Path.ChangeExtension(args[1], ".failure.txt")); return;
+        }
         if (args.Length == 2 && args[0] == "--startup-handoff-child") {
             RunUpdateCheck(async () => {
                 StartupTask.RemoveHandoff();
@@ -45,11 +54,13 @@ public static class Program
         if (args.Length == 2 && args[0] == "--controlled-memory-experiment") {
             RunUpdateCheck(() => ControlledMemoryExperiment.Run(args[1]), Path.ChangeExtension(args[1], ".failure.txt")); return;
         }
-        if (args.Length == 2 && args[0] == "--component-probe") {
+        if (args.Length == 2 && args[0] is "--component-probe" or "--component-repeat-probe") {
             RunUpdateCheck(async () => {
                 var started = Stopwatch.GetTimestamp();
-                await ElevatedMemoryApi.ValidateSystemComponentAsync();
-                File.WriteAllText(args[1], JsonSerializer.Serialize(new { Authenticated = true, CommandsSent = 0, Seconds = Stopwatch.GetElapsedTime(started).TotalSeconds }));
+                var rounds = args[0] == "--component-repeat-probe" ? 3 : 1;
+                for (var i = 0; i < rounds; i++) await ElevatedMemoryApi.ValidateSystemComponentAsync();
+                File.WriteAllText(args[1], JsonSerializer.Serialize(new { Authenticated = true, CommandsSent = 0, Sessions = rounds,
+                    CallerAdmin = WindowsMemoryApi.IsAdmin(), Launch = "preauthorized-task", Seconds = Stopwatch.GetElapsedTime(started).TotalSeconds }));
             }, Path.ChangeExtension(args[1], ".failure.txt")); return;
         }
         if (args.Length == 2 && args[0] == "--architecture-check") {

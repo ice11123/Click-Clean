@@ -12,7 +12,14 @@ internal static class Program
     public static int Main(string[] args)
     {
         // 自测不启用特权、不连接界面、不执行任何整理。
-        if (args.SequenceEqual(new[] { "--self-test" })) return CleanupProtocol.SelfTest() | ProtectedInstallation.SelfTest();
+        if (args.SequenceEqual(new[] { "--self-test" })) return CleanupProtocol.SelfTest() | ProtectedInstallation.SelfTest() | AuthorizationTaskInstaller.SelfTest();
+        if (args.Length == 1 && args[0] is "--install-authorization" or "--remove-authorization") {
+            try {
+                if (!string.Equals(Environment.ProcessPath, ProtectedInstallation.HelperPath, StringComparison.OrdinalIgnoreCase)) return 3;
+                AuthorizationTaskInstaller.Configure(args[0] == "--install-authorization"); return 0;
+            }
+            catch (Exception ex) { return ex.HResult < 0 ? ex.HResult : 6; }
+        }
         if (!CleanupProtocol.TryArguments(args, out var pipeName, out var client)) return 2;
         try
         {
