@@ -7,6 +7,17 @@ async Task Check(string name, Func<Task> test)
 }
 void Assert(bool condition) { if (!condition) throw new Exception("断言失败"); }
 MemoryCommand[] all = [MemoryCommand.WorkingSets, MemoryCommand.ModifiedPages, MemoryCommand.StandbyCache];
+await Check("预授权任务只允许固定受保护组件与当前账户交互令牌", () => {
+    const string sid = "S-1-5-21-1-2-3-1001", helper = "C:\\Program Files\\Click-Clean\\Privileged\\ClickClean.Privileged.exe", directory = "C:\\Program Files\\Click-Clean\\Privileged";
+    var valid = new AuthorizedTaskDefinition(sid, 3, 1, true, true, 0, 1, 0, helper, AuthorizedTaskPolicy.Arguments, directory, "PT0S", 2);
+    Assert(AuthorizedTaskPolicy.IsValid(valid, sid, helper, directory));
+    foreach (var invalid in new[] { valid with { UserSid = "S-1-5-18" }, valid with { LogonType = 5 }, valid with { RunLevel = 0 },
+        valid with { Enabled = false }, valid with { AllowDemandStart = false }, valid with { TriggerCount = 1 }, valid with { ActionCount = 2 },
+        valid with { ActionType = 5 }, valid with { Path = "C:\\Users\\Public\\fake.exe" }, valid with { Arguments = "--pipe $(Arg0) --client $(Arg1) --command 2" },
+        valid with { WorkingDirectory = "C:\\Users\\Public" }, valid with { ExecutionTimeLimit = "PT1M" }, valid with { MultipleInstances = 0 } })
+        Assert(!AuthorizedTaskPolicy.IsValid(invalid, sid, helper, directory));
+    return Task.CompletedTask;
+});
 await Check("新安装默认开启底部岛并使用浅色主题，已有主题与关闭选择保留", () => {
     var defaults = new UserSettings(); defaults.Validate(); Assert(defaults.MiniIsland && defaults.Theme == "light");
     var previous = new UserSettings { Theme = "dark", MiniIsland = false }; previous.Validate(); Assert(previous.Theme == "dark" && !previous.MiniIsland);
